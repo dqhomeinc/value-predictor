@@ -1,0 +1,10 @@
+{% extends 'base.html' %}
+{% block title %}Value Predictor{% endblock %}
+{% block content %}
+  <h1>Value Predictor</h1>
+  <p>Signed in as {{ user.username }}. Property analysis is coming in a later phase.</p>
+  <form method="post" action="{{ url_for('auth.logout') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Log out</button>
+  </form>
+{% endblock %}

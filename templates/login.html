@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% block title %}Log in - Value Predictor{% endblock %}
+{% block content %}
+  <h1>Log in</h1>
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if next_url %}
+      <input type="hidden" name="next" value="{{ next_url }}">
+    {% endif %}
+    <label>Email <input type="email" name="email" required></label>
+    <label>Password <input type="password" name="password" required></label>
+    <button type="submit">Log in</button>
+  </form>
+  <p><a href="{{ url_for('auth.register') }}">Need an account? Register</a></p>
+{% endblock %}
