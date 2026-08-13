@@ -2,6 +2,9 @@ services:
   - type: web
     name: value-predictor
     runtime: python
+    # RENTCAST_API_KEY and ANTHROPIC_API_KEY are dashboard-only: set them
+    # manually in the Render dashboard after deployment
+    # (Dashboard -> value-predictor -> Environment), not in this file.
     buildCommand: pip install -r requirements.txt && FLASK_APP=wsgi:app flask db upgrade
     startCommand: gunicorn wsgi:app
     plan: free
@@ -10,8 +13,6 @@ services:
         generateValue: true
       - key: DATABASE_URL
         sync: false
+        # Set to your Postgres connection string.
       - key: PYTHON_VERSION
         value: 3.11.0
-      # DATABASE_URL: set to your Postgres connection string.
-      # RENTCAST_API_KEY and ANTHROPIC_API_KEY: set manually in the Render
-      # dashboard after deployment (Dashboard -> value-predictor -> Environment).
