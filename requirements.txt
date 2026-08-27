@@ -6,6 +6,8 @@ Flask-WTF==1.3.0
 python-dotenv==1.2.2
 gunicorn==22.0.0
 pg8000==1.31.5
+# Used directly by integrations/rentcast.py, not just a transitive dep.
+requests==2.33.0
 # Transitive deps pinned directly to fixed versions (known CVEs in the
 # versions Flask/requests would otherwise resolve to).
 urllib3==2.7.0
