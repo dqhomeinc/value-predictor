@@ -22,13 +22,22 @@ class User(UserMixin, db.Model):
 
 
 class PropertyLookupCache(db.Model):
+    """
+    Caches RentCast's raw responses per normalized address, indefinitely
+    (no expiry — RentCast's terms place no limit on retention). Protects
+    the ~50 calls/month free-tier quota: a cache hit costs 0 calls, a miss
+    costs 2 (Value Estimate + Property Records).
+    """
     __tablename__ = 'property_lookup_cache'
 
     id = db.Column(db.Integer, primary_key=True)
     normalized_address = db.Column(db.String(255), unique=True, nullable=False)
-    raw_property_json = db.Column(db.JSON, nullable=True)
+    # Value Estimate (AVM) response: subject property characteristics,
+    # market value estimate, and comps — all in one payload.
     raw_avm_json = db.Column(db.JSON, nullable=True)
-    raw_comps_json = db.Column(db.JSON, nullable=True)
+    # Property Records response: adds zoning and subdivision, which aren't
+    # present on the Value Estimate response.
+    raw_property_json = db.Column(db.JSON, nullable=True)
     fetched_at = db.Column(db.DateTime, server_default=db.func.now())
 
 
