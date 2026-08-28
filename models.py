@@ -42,6 +42,13 @@ class PropertyLookupCache(db.Model):
 
 
 class Analysis(db.Model):
+    """
+    A teardown-and-rebuild deal analysis for one address. The stored deal
+    fields (build_cost_estimate, total_cost_estimate, required_sale_price,
+    achievable_margin_pct, is_worth_it) are the baseline computed from the
+    values as originally submitted — the results page's live cost/sqft and
+    margin sliders are exploratory and not re-persisted here.
+    """
     __tablename__ = 'analysis'
 
     id = db.Column(db.Integer, primary_key=True)
@@ -51,43 +58,32 @@ class Analysis(db.Model):
     # User inputs
     address = db.Column(db.String(255), nullable=False)
     purchase_price = db.Column(db.Float, nullable=False)
-    condition_notes = db.Column(db.Text, nullable=True)
+    initial_cost_per_sqft = db.Column(db.Float, nullable=False)
+    initial_profit_margin_pct = db.Column(db.Float, nullable=False)
 
-    # Denormalized property characteristics
+    # Denormalized property characteristics. zoning/subdivision are
+    # informational-only — never used in the deal math (see plan: RentCast's
+    # zoning is a classification string, not a buildable constraint).
     property_sqft = db.Column(db.Integer, nullable=True)
+    property_lot_size = db.Column(db.Integer, nullable=True)
     property_bedrooms = db.Column(db.Integer, nullable=True)
     property_bathrooms = db.Column(db.Float, nullable=True)
     property_year_built = db.Column(db.Integer, nullable=True)
+    property_zoning = db.Column(db.String(30), nullable=True)
+    property_subdivision = db.Column(db.String(255), nullable=True)
 
-    # ARV
-    arv_estimate = db.Column(db.Float, nullable=True)
-    arv_method = db.Column(db.String(30), nullable=True)  # 'rentcast_avm' | 'comps_heuristic'
-    arv_confidence_low = db.Column(db.Float, nullable=True)
-    arv_confidence_high = db.Column(db.Float, nullable=True)
-    arv_comps_count = db.Column(db.Integer, nullable=True)
-    arv_comps_snapshot = db.Column(db.JSON, nullable=True)
+    # Market value benchmark (services/market_value.py)
+    market_value_estimate = db.Column(db.Float, nullable=True)
+    market_value_method = db.Column(db.String(30), nullable=True)  # 'rentcast_avm' | 'comps_median_sqft'
+    market_value_confidence = db.Column(db.String(10), nullable=True)  # 'high' | 'low' — derived, not from the API
+    market_value_comps_count = db.Column(db.Integer, nullable=True)
+    market_value_comps_snapshot = db.Column(db.JSON, nullable=True)
 
-    # Renovation cost
-    reno_cost_estimate = db.Column(db.Float, nullable=True)
-    reno_cost_breakdown = db.Column(db.JSON, nullable=True)
-
-    # Profit projection
-    holding_period_months = db.Column(db.Integer, nullable=True)
-    agent_commission_pct = db.Column(db.Float, nullable=True)
-    closing_costs_pct = db.Column(db.Float, nullable=True)
-    projected_net_profit = db.Column(db.Float, nullable=True)
-    projected_margin_pct = db.Column(db.Float, nullable=True)
-
-    # Flip Score
-    flip_score = db.Column(db.Integer, nullable=True)
-    flip_grade = db.Column(db.String(30), nullable=True)
-    flip_score_breakdown = db.Column(db.JSON, nullable=True)
-
-    # LLM output
-    llm_model = db.Column(db.String(60), nullable=True)
-    llm_recommendation = db.Column(db.String(30), nullable=True)
-    llm_summary = db.Column(db.Text, nullable=True)
-    llm_risk_flags = db.Column(db.JSON, nullable=True)
-    llm_raw_response = db.Column(db.JSON, nullable=True)
+    # Rebuild deal baseline (services/rebuild_calc.py)
+    build_cost_estimate = db.Column(db.Float, nullable=True)
+    total_cost_estimate = db.Column(db.Float, nullable=True)
+    required_sale_price = db.Column(db.Float, nullable=True)
+    achievable_margin_pct = db.Column(db.Float, nullable=True)
+    is_worth_it = db.Column(db.Boolean, nullable=True)
 
     user = db.relationship('User', backref=db.backref('analyses', lazy=True, cascade='all, delete-orphan'))
