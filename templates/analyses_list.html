@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block title %}Past Analyses - Value Predictor{% endblock %}
+{% block content %}
+  <p><a href="{{ url_for('main.index') }}">&larr; New analysis</a></p>
+  <h1>Past Analyses</h1>
+
+  {% if analyses %}
+    <ul class="analyses-list">
+      {% for a in analyses %}
+        <li>
+          <a href="{{ url_for('main.analysis_detail', analysis_id=a.id) }}">{{ a.address }}</a>
+          <span class="badge {{ 'badge-worth-it' if a.is_worth_it else 'badge-not-worth-it' }}">
+            {{ 'Worth it' if a.is_worth_it else 'Not worth it' }}
+          </span>
+          <small class="muted">{{ a.created_at.strftime('%Y-%m-%d') if a.created_at else '' }}</small>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No analyses yet. <a href="{{ url_for('main.index') }}">Run your first one</a>.</p>
+  {% endif %}
+{% endblock %}

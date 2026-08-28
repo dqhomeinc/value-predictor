@@ -1,0 +1,62 @@
+{% extends 'base.html' %}
+{% block title %}{{ analysis.address }} - Value Predictor{% endblock %}
+{% block content %}
+  <p><a href="{{ url_for('main.index') }}">&larr; New analysis</a> &middot; <a href="{{ url_for('main.analyses') }}">Past analyses</a></p>
+  <h1>{{ analysis.address }}</h1>
+
+  <section class="verdict {{ 'worth-it' if analysis.is_worth_it else 'not-worth-it' }}" id="verdict">
+    <h2 id="verdict-label">{{ 'Worth It' if analysis.is_worth_it else 'Not Worth It' }}</h2>
+    <p>Achievable margin at current market value: <strong id="achievable-margin">{{ '%.1f'|format(analysis.achievable_margin_pct) }}%</strong></p>
+  </section>
+
+  <section>
+    <h3>Market value estimate</h3>
+    <p>
+      <strong>${{ '{:,.0f}'.format(analysis.market_value_estimate) }}</strong>
+      <span class="badge badge-{{ analysis.market_value_confidence }}">{{ analysis.market_value_confidence }} confidence</span>
+    </p>
+    <p class="muted">
+      Method: {{ 'RentCast AVM' if analysis.market_value_method == 'rentcast_avm' else 'Comps median $/sqft (fallback)' }},
+      based on {{ analysis.market_value_comps_count }} comp{{ '' if analysis.market_value_comps_count == 1 else 's' }}.
+    </p>
+  </section>
+
+  <section>
+    <h3>Property details</h3>
+    <ul>
+      <li>Square footage: {{ analysis.property_sqft }}</li>
+      <li>Lot size: {{ analysis.property_lot_size or '—' }}</li>
+      <li>Bed / Bath: {{ analysis.property_bedrooms or '—' }} / {{ analysis.property_bathrooms or '—' }}</li>
+      <li>Year built: {{ analysis.property_year_built or '—' }}</li>
+      <li>Zoning: {{ analysis.property_zoning or '—' }}
+        <small class="muted">(informational only — verify local buildable rules independently)</small></li>
+      <li>Subdivision: {{ analysis.property_subdivision or '—' }}</li>
+    </ul>
+  </section>
+
+  <section>
+    <h3>Adjust the deal</h3>
+    <p class="muted">Purchase price (${{ '{:,.0f}'.format(analysis.purchase_price) }}) and the {{ analysis.property_sqft }} sqft rebuild size are fixed for this analysis. Try different rebuild costs and target margins below — updates instantly, no page reload.</p>
+    <label>Rebuild cost per sq ft ($)
+      <input type="number" id="cost_per_sqft" min="0" step="1" value="{{ analysis.initial_cost_per_sqft }}">
+    </label>
+    <label>Target profit margin (%)
+      <input type="number" id="profit_margin_pct" step="0.1" value="{{ analysis.initial_profit_margin_pct }}">
+    </label>
+
+    <table>
+      <tbody>
+        <tr><td>Build cost</td><td id="build-cost"></td></tr>
+        <tr><td>Total cost (purchase + build)</td><td id="total-cost"></td></tr>
+        <tr><td>Required sale price for target margin</td><td id="required-sale-price"></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <script id="analysis-data" type="application/json">{{ {
+      'purchasePrice': analysis.purchase_price,
+      'propertySqft': analysis.property_sqft,
+      'marketValueEstimate': analysis.market_value_estimate,
+    } | tojson }}</script>
+  <script src="{{ url_for('static', filename='results.js') }}"></script>
+{% endblock %}
