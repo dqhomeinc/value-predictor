@@ -1,9 +1,13 @@
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  max-width: 480px;
+  max-width: 640px;
   margin: 60px auto;
   padding: 0 20px;
   color: #1a1a1a;
+}
+
+.muted {
+  color: #666;
 }
 
 form {
@@ -38,4 +42,79 @@ button {
 
 .flash-error {
   color: #b00020;
+}
+
+section {
+  margin: 24px 0;
+}
+
+.verdict {
+  padding: 16px 20px;
+  border-radius: 8px;
+  text-align: center;
+}
+
+.verdict h2 {
+  margin: 0 0 8px;
+}
+
+.verdict.worth-it {
+  background: #e6f4ea;
+  color: #1e7e34;
+}
+
+.verdict.not-worth-it {
+  background: #fdecea;
+  color: #b00020;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.badge-high,
+.badge-worth-it {
+  background: #e6f4ea;
+  color: #1e7e34;
+}
+
+.badge-low,
+.badge-not-worth-it {
+  background: #fff4e5;
+  color: #a15c00;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 8px;
+}
+
+table td {
+  padding: 6px 0;
+  border-bottom: 1px solid #eee;
+}
+
+table td:last-child {
+  text-align: right;
+  font-weight: 600;
+}
+
+.analyses-list {
+  list-style: none;
+  padding: 0;
+}
+
+.analyses-list li {
+  padding: 10px 0;
+  border-bottom: 1px solid #eee;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
