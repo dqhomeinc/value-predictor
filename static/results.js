@@ -1,13 +1,15 @@
-// Live recompute for the results page's cost/sqft + margin sliders.
-// Mirrors services/rebuild_calc.py's calculate_rebuild_deal() exactly —
-// keep the two in sync if the formula ever changes. Deliberately has no
-// network calls: purchasePrice, propertySqft, and marketValueEstimate are
-// fixed per analysis and embedded in the page already.
+// Live recompute for the results page's purchase price / cost/sqft /
+// margin inputs. Mirrors services/rebuild_calc.py's calculate_rebuild_deal()
+// exactly — keep the two in sync if the formula ever changes. Deliberately
+// has no network calls: propertySqft and marketValueEstimate are fixed per
+// analysis and embedded in the page already; purchase price, cost/sqft,
+// and margin are all live inputs the user can adjust.
 document.addEventListener('DOMContentLoaded', () => {
   const dataEl = document.getElementById('analysis-data');
+  const purchasePriceInput = document.getElementById('purchase_price');
   const costInput = document.getElementById('cost_per_sqft');
   const marginInput = document.getElementById('profit_margin_pct');
-  if (!dataEl || !costInput || !marginInput) return;
+  if (!dataEl || !purchasePriceInput || !costInput || !marginInput) return;
 
   const fixed = JSON.parse(dataEl.textContent);
 
@@ -32,11 +34,12 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function recompute() {
+    const purchasePrice = parseFloat(purchasePriceInput.value) || 0;
     const costPerSqft = parseFloat(costInput.value) || 0;
     const profitMarginPct = parseFloat(marginInput.value) || 0;
 
     const deal = calculateRebuildDeal({
-      purchasePrice: fixed.purchasePrice,
+      purchasePrice,
       propertySqft: fixed.propertySqft,
       costPerSqft,
       profitMarginPct,
@@ -52,6 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
     verdictSection.classList.toggle('not-worth-it', !deal.isWorthIt);
   }
 
+  purchasePriceInput.addEventListener('input', recompute);
   costInput.addEventListener('input', recompute);
   marginInput.addEventListener('input', recompute);
   recompute();
