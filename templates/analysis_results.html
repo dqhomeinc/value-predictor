@@ -39,7 +39,11 @@
     {% if analysis.sale_history_sorted %}
       <ul class="sale-history">
         {% for sale in analysis.sale_history_sorted %}
-          <li>{{ sale.date[:10] }} — {{ sale.event }} — ${{ '{:,.0f}'.format(sale.price) }}</li>
+          <li>
+            {{ sale.date[:10] if sale.date else 'Unknown date' }} —
+            {{ sale.event or 'Event' }} —
+            {{ '${:,.0f}'.format(sale.price) if sale.price is not none else 'price undisclosed' }}
+          </li>
         {% endfor %}
       </ul>
     {% else %}
