@@ -20,7 +20,14 @@ VALUE_ESTIMATE_RESPONSE = {
 }
 
 PROPERTY_RECORD_RESPONSE = [
-    {'zoning': 'R-1', 'subdivision': 'Grand Lake Estates'}
+    {
+        'zoning': 'R-1',
+        'subdivision': 'Grand Lake Estates',
+        'history': {
+            '2017-10-19': {'event': 'Sale', 'date': '2017-10-19T00:00:00.000Z', 'price': 185000},
+            '2024-11-18': {'event': 'Sale', 'date': '2024-11-18T00:00:00.000Z', 'price': 270000},
+        },
+    }
 ]
 
 
@@ -88,6 +95,11 @@ class TestRunAnalysis:
         # Zoning/subdivision from Property Records.
         assert analysis.property_zoning == 'R-1'
         assert analysis.property_subdivision == 'Grand Lake Estates'
+
+        # Sale history from Property Records, stored raw; sorted view is
+        # most-recent-first (covered directly in tests/test_models.py).
+        assert analysis.property_sale_history == PROPERTY_RECORD_RESPONSE[0]['history']
+        assert analysis.sale_history_sorted[0]['price'] == 270000
 
         # Market value: AVM price directly, comps count == 3, high
         # confidence (>=3 comps, tight range: 40k/500k = 8%).
