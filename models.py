@@ -71,6 +71,10 @@ class Analysis(db.Model):
     property_year_built = db.Column(db.Integer, nullable=True)
     property_zoning = db.Column(db.String(30), nullable=True)
     property_subdivision = db.Column(db.String(255), nullable=True)
+    # RentCast Property Records' raw `history` field: a dict keyed by ISO
+    # date string, each value {event, date, price}. Informational only,
+    # same as zoning/subdivision — never used in the deal math.
+    property_sale_history = db.Column(db.JSON, nullable=True)
 
     # Market value benchmark (services/market_value.py)
     market_value_estimate = db.Column(db.Float, nullable=True)
@@ -87,3 +91,14 @@ class Analysis(db.Model):
     is_worth_it = db.Column(db.Boolean, nullable=True)
 
     user = db.relationship('User', backref=db.backref('analyses', lazy=True, cascade='all, delete-orphan'))
+
+    @property
+    def sale_history_sorted(self):
+        """
+        property_sale_history as a list of {event, date, price} entries,
+        most-recent-first. The dict's keys are ISO date strings ("YYYY-MM-DD"),
+        which sort correctly as plain strings — no date parsing needed.
+        """
+        if not self.property_sale_history:
+            return []
+        return [entry for _, entry in sorted(self.property_sale_history.items(), reverse=True)]

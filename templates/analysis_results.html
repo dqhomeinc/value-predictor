@@ -35,6 +35,19 @@
   </section>
 
   <section>
+    <h3>Transaction history</h3>
+    {% if analysis.sale_history_sorted %}
+      <ul class="sale-history">
+        {% for sale in analysis.sale_history_sorted %}
+          <li>{{ sale.date[:10] }} — {{ sale.event }} — ${{ '{:,.0f}'.format(sale.price) }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">No sale history available for this property from RentCast.</p>
+    {% endif %}
+  </section>
+
+  <section>
     <h3>Adjust the deal</h3>
     <p class="muted">The {{ analysis.property_sqft }} sqft rebuild size and the ${{ '{:,.0f}'.format(analysis.market_value_estimate) }} market value estimate are fixed for this analysis. Try different purchase prices, rebuild costs, and target margins below — updates instantly, no page reload.</p>
     <label>Purchase price ($)
