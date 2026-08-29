@@ -1,0 +1,86 @@
+name: Render Build Check
+
+# Mirrors render.yaml's actual buildCommand and startCommand against a
+# real Postgres instance, so a PR that would fail to build/migrate/boot
+# on Render fails here first instead of surfacing in a live deploy.
+#
+# Scope note: this validates the code path — it catches a broken
+# migration, an app that fails to import, a boot-time crash. It can't
+# catch Render dashboard misconfiguration (a start command typed wrong by
+# hand, a forgotten env var) since that's account state outside the repo.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  render-build-check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: value_predictor_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Same shape as Render's real DATABASE_URL — app.py converts this to
+      # the pg8000 dialect, same as it does in production.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/value_predictor_ci
+      SECRET_KEY: ci-dummy-secret-key
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Render's actual build command
+        # Keep this in sync with render.yaml's buildCommand.
+        run: pip install -r requirements.txt && FLASK_APP=wsgi:app flask db upgrade
+
+      - name: Boot the app with Render's actual start command
+        # Keep this in sync with render.yaml's startCommand.
+        run: |
+          gunicorn wsgi:app --bind 127.0.0.1:8000 &
+          GUNICORN_PID=$!
+
+          success=0
+          for i in $(seq 1 10); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then
+              success=1
+              break
+            fi
+            sleep 1
+          done
+
+          kill "$GUNICORN_PID" 2>/dev/null || true
+
+          if [ "$success" -ne 1 ]; then
+            echo "App failed to respond on /health within 10s of starting"
+            exit 1
+          fi
+          echo "App booted successfully via gunicorn wsgi:app and /health responded"
