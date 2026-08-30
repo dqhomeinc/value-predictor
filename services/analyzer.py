@@ -67,6 +67,8 @@ def run_analysis(user, address, purchase_price, cost_per_sqft, profit_margin_pct
         property_zoning=property_json.get('zoning'),
         property_subdivision=property_json.get('subdivision'),
         property_sale_history=property_json.get('history'),
+        property_latitude=subject.get('latitude'),
+        property_longitude=subject.get('longitude'),
         market_value_estimate=market_value.market_value_estimate,
         market_value_method=market_value.market_value_method,
         market_value_confidence=market_value.market_value_confidence,

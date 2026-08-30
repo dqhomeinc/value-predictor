@@ -1,5 +1,11 @@
 {% extends 'base.html' %}
 {% block title %}{{ analysis.address }} - Value Predictor{% endblock %}
+{% block head %}
+  {% if analysis.property_latitude and analysis.property_longitude %}
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  {% endif %}
+{% endblock %}
 {% block content %}
   <p><a href="{{ url_for('main.index') }}">&larr; New analysis</a> &middot; <a href="{{ url_for('main.analyses') }}">Past analyses</a></p>
   <h1>{{ analysis.address }}</h1>
@@ -32,6 +38,21 @@
         <small class="muted">(informational only — verify local buildable rules independently)</small></li>
       <li>Subdivision: {{ analysis.property_subdivision or '—' }}</li>
     </ul>
+  </section>
+
+  <section>
+    <h3>Location</h3>
+    {% if analysis.property_latitude and analysis.property_longitude %}
+      <div id="property-map"></div>
+      <script>
+        window.PROPERTY_MAP_DATA = { lat: {{ analysis.property_latitude|tojson }}, lng: {{ analysis.property_longitude|tojson }} };
+      </script>
+      <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+              integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+      <script src="{{ url_for('static', filename='property-map.js') }}"></script>
+    {% else %}
+      <p class="muted">No location data available for this property from RentCast.</p>
+    {% endif %}
   </section>
 
   <section>
