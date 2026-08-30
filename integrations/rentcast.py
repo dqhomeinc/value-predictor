@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 RENTCAST_BASE_URL = 'https://api.rentcast.io/v1'
 DEFAULT_TIMEOUT = 10  # seconds
 
+# Widest radius the results page's nearby-sales filter offers (5/10/15 mi).
+# Requesting comps out to this distance up front means the 5/10/15 mi
+# filter can run entirely client-side against one cached fetch.
+NEARBY_SALES_MAX_RADIUS_MILES = 15
+
 
 class RentCastError(Exception):
     """Base class for RentCast client failures."""
@@ -84,14 +89,24 @@ class RentCastClient:
             )
         return response.json()
 
-    def get_value_estimate(self, address):
+    def get_value_estimate(self, address, max_radius=NEARBY_SALES_MAX_RADIUS_MILES, comp_count=25):
         """
         Value Estimate (AVM) endpoint. Returns `price`, `priceRangeLow`/
         `priceRangeHigh`, `subjectProperty` (bedrooms, bathrooms,
-        squareFootage, lotSize, yearBuilt, ...), and `comparables` — all in
-        one call. https://developers.rentcast.io/reference/value-estimate
+        squareFootage, lotSize, yearBuilt, ...), and `comparables`
+        (address, price, bedrooms, bathrooms, squareFootage, distance,
+        ...) — all in one call. https://developers.rentcast.io/reference/value-estimate
+
+        max_radius/comp_count default to the widest RentCast allows
+        (compCount maxes at 25) so the results page's nearby-sales radius
+        filter (up to NEARBY_SALES_MAX_RADIUS_MILES) has enough comps to
+        filter client-side without a second call. This also widens the
+        input to RentCast's own AVM price calculation compared to its
+        undocumented default — consistent with the existing thin-comps/
+        rural-area confidence risk already called out in the plan, not a
+        new category of risk.
         """
-        return self._get('/avm/value', {'address': address})
+        return self._get('/avm/value', {'address': address, 'maxRadius': max_radius, 'compCount': comp_count})
 
     def get_property_record(self, address):
         """

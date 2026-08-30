@@ -24,6 +24,11 @@ def flask_app():
     flask_app.config['SECRET_KEY'] = 'test-secret'
     with flask_app.app_context():
         yield flask_app
+        # Dispose the engine when this module's tests are done, so the
+        # next test file's Flask app (a different instance, same shared
+        # `db` object) starts from a clean connection pool rather than
+        # whatever this one leaves behind.
+        db.engine.dispose()
 
 
 @pytest.fixture
@@ -33,9 +38,16 @@ def client(flask_app):
         yield flask_app.test_client()
         db.session.remove()
         db.drop_all()
+        db.engine.dispose()
 
 
-def make_logged_in_analysis(client, property_sale_history=None, property_latitude=None, property_longitude=None):
+def make_logged_in_analysis(
+    client,
+    property_sale_history=None,
+    property_latitude=None,
+    property_longitude=None,
+    market_value_comps_snapshot=None,
+):
     client.post('/register', data={
         'username': 'flipper', 'email': 'f@example.com', 'password': 'correcthorsebatterystaple',
     })
@@ -52,6 +64,7 @@ def make_logged_in_analysis(client, property_sale_history=None, property_latitud
         market_value_method='rentcast_avm',
         market_value_confidence='high',
         market_value_comps_count=3,
+        market_value_comps_snapshot=market_value_comps_snapshot,
         build_cost_estimate=200_000,
         total_cost_estimate=400_000,
         required_sale_price=480_000,
@@ -144,3 +157,67 @@ class TestAnalysisResultsMap:
 
         assert response.status_code == 200
         assert 'No location data available' in html
+
+
+SAMPLE_COMPS = [
+    {
+        'formattedAddress': '456 Oak Ave, Austin, TX',
+        'price': 480_000,
+        'bedrooms': 3,
+        'bathrooms': 2,
+        'squareFootage': 1900,
+        'distance': 2.3,
+    },
+    {
+        'formattedAddress': '789 Pine Ln, Austin, TX',
+        'price': 510_000,
+        'bedrooms': 4,
+        'bathrooms': 2.5,
+        'squareFootage': 2200,
+        'distance': 8.1,
+    },
+    {
+        'formattedAddress': '12 Cedar Ct, Austin, TX',
+        'price': 460_000,
+        'bedrooms': 3,
+        'bathrooms': 2,
+        'squareFootage': 1850,
+        'distance': 14.9,
+    },
+]
+
+
+class TestAnalysisResultsNearbySales:
+    def test_renders_radius_selector_and_comps_data_when_present(self, client):
+        analysis = make_logged_in_analysis(client, market_value_comps_snapshot=SAMPLE_COMPS)
+
+        response = client.get(f'/analyses/{analysis.id}')
+        html = response.data.decode()
+
+        assert response.status_code == 200
+        assert 'class="radius-btn" data-radius="5"' in html
+        assert 'class="radius-btn" data-radius="10"' in html
+        assert 'class="radius-btn" data-radius="15"' in html
+        assert 'id="nearby-sales-data"' in html
+        assert 'nearby-sales.js' in html
+        assert '456 Oak Ave, Austin, TX' in html
+
+    def test_renders_fallback_when_no_comps(self, client):
+        analysis = make_logged_in_analysis(client, market_value_comps_snapshot=None)
+
+        response = client.get(f'/analyses/{analysis.id}')
+        html = response.data.decode()
+
+        assert response.status_code == 200
+        assert 'No comparable sales available' in html
+        assert 'radius-btn' not in html
+        assert 'nearby-sales.js' not in html
+
+    def test_renders_fallback_when_comps_is_empty_list(self, client):
+        analysis = make_logged_in_analysis(client, market_value_comps_snapshot=[])
+
+        response = client.get(f'/analyses/{analysis.id}')
+        html = response.data.decode()
+
+        assert response.status_code == 200
+        assert 'No comparable sales available' in html

@@ -19,3 +19,9 @@ def app():
         yield flask_app
         db.session.remove()
         db.drop_all()
+        # Dispose the engine, not just the session — Flask-SQLAlchemy
+        # otherwise leaves a pooled connection alive after this Flask app
+        # instance goes out of scope, which caused intermittent failures
+        # in other test files' fixtures that build their own Flask app
+        # against the same shared `db` object (see tests/test_routes.py).
+        db.engine.dispose()
