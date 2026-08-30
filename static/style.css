@@ -120,6 +120,12 @@ table td:last-child {
   padding: 0;
 }
 
+#property-map {
+  height: 300px;
+  border-radius: 8px;
+  border: 1px solid #eee;
+}
+
 .analyses-list li {
   padding: 10px 0;
   border-bottom: 1px solid #eee;

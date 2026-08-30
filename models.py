@@ -75,6 +75,9 @@ class Analysis(db.Model):
     # date string, each value {event, date, price}. Informational only,
     # same as zoning/subdivision — never used in the deal math.
     property_sale_history = db.Column(db.JSON, nullable=True)
+    # For the results-page map (OpenStreetMap/Leaflet) — display only.
+    property_latitude = db.Column(db.Float, nullable=True)
+    property_longitude = db.Column(db.Float, nullable=True)
 
     # Market value benchmark (services/market_value.py)
     market_value_estimate = db.Column(db.Float, nullable=True)

@@ -35,7 +35,7 @@ def client(flask_app):
         db.drop_all()
 
 
-def make_logged_in_analysis(client, property_sale_history):
+def make_logged_in_analysis(client, property_sale_history=None, property_latitude=None, property_longitude=None):
     client.post('/register', data={
         'username': 'flipper', 'email': 'f@example.com', 'password': 'correcthorsebatterystaple',
     })
@@ -58,6 +58,8 @@ def make_logged_in_analysis(client, property_sale_history):
         achievable_margin_pct=25.0,
         is_worth_it=True,
         property_sale_history=property_sale_history,
+        property_latitude=property_latitude,
+        property_longitude=property_longitude,
     )
     db.session.add(analysis)
     db.session.commit()
@@ -105,3 +107,40 @@ class TestAnalysisResultsTransactionHistory:
 
         assert response.status_code == 200
         assert b'No sale history available' in response.data
+
+
+class TestAnalysisResultsMap:
+    def test_renders_map_when_coordinates_present(self, client):
+        analysis = make_logged_in_analysis(client, property_latitude=30.2849, property_longitude=-97.7341)
+
+        response = client.get(f'/analyses/{analysis.id}')
+        html = response.data.decode()
+
+        assert response.status_code == 200
+        assert 'id="property-map"' in html
+        assert 'leaflet.js' in html
+        assert 'leaflet.css' in html
+        assert '30.2849' in html
+        assert '-97.7341' in html
+
+    def test_renders_fallback_when_coordinates_missing(self, client):
+        analysis = make_logged_in_analysis(client, property_latitude=None, property_longitude=None)
+
+        response = client.get(f'/analyses/{analysis.id}')
+        html = response.data.decode()
+
+        assert response.status_code == 200
+        assert 'No location data available' in html
+        # Leaflet shouldn't even load if there's nothing to show.
+        assert 'leaflet.js' not in html
+        assert 'id="property-map"' not in html
+
+    def test_renders_fallback_when_only_one_coordinate_present(self, client):
+        # Defensive: a partial/malformed response shouldn't half-render a map.
+        analysis = make_logged_in_analysis(client, property_latitude=30.2849, property_longitude=None)
+
+        response = client.get(f'/analyses/{analysis.id}')
+        html = response.data.decode()
+
+        assert response.status_code == 200
+        assert 'No location data available' in html

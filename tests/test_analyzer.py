@@ -15,6 +15,8 @@ VALUE_ESTIMATE_RESPONSE = {
         'bedrooms': 3,
         'bathrooms': 2,
         'yearBuilt': 1965,
+        'latitude': 30.2849,
+        'longitude': -97.7341,
     },
     'comparables': [{'price': 490_000}, {'price': 500_000}, {'price': 510_000}],
 }
@@ -100,6 +102,10 @@ class TestRunAnalysis:
         # most-recent-first (covered directly in tests/test_models.py).
         assert analysis.property_sale_history == PROPERTY_RECORD_RESPONSE[0]['history']
         assert analysis.sale_history_sorted[0]['price'] == 270000
+
+        # Coordinates for the results-page map, from the AVM's subjectProperty.
+        assert analysis.property_latitude == 30.2849
+        assert analysis.property_longitude == -97.7341
 
         # Market value: AVM price directly, comps count == 3, high
         # confidence (>=3 comps, tight range: 40k/500k = 8%).
