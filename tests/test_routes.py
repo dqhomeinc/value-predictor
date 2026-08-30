@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from app import create_app
@@ -16,12 +18,30 @@ def flask_app():
     instance it's given, and calling it fresh per test caused state
     leakage between tests within the same process. Call it once per
     module; reset only the database per test via the `client` fixture.
+
+    DATABASE_URL/SECRET_KEY have to be set in the environment *before*
+    create_app() runs, not as flask_app.config[...] overrides afterward —
+    create_app() reads them and calls db.init_app() internally, which
+    binds the engine immediately. Setting config after the fact is too
+    late to change that binding. (Found the hard way: without this, every
+    test in this file was silently running against the real local
+    instance/value_predictor.db instead of an isolated in-memory one.)
     """
-    flask_app = create_app()
+    old_database_url = os.environ.get('DATABASE_URL')
+    old_secret_key = os.environ.get('SECRET_KEY')
+    os.environ['DATABASE_URL'] = 'sqlite:///:memory:'
+    os.environ['SECRET_KEY'] = 'test-secret'
+    try:
+        flask_app = create_app()
+    finally:
+        for key, old_value in (('DATABASE_URL', old_database_url), ('SECRET_KEY', old_secret_key)):
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
+
     flask_app.config['TESTING'] = True
     flask_app.config['WTF_CSRF_ENABLED'] = False
-    flask_app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
-    flask_app.config['SECRET_KEY'] = 'test-secret'
     with flask_app.app_context():
         yield flask_app
         # Dispose the engine when this module's tests are done, so the
