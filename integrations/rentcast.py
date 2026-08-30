@@ -131,14 +131,22 @@ class RentCastClient:
         another address's comps, not looked up for this address directly)
         is missing zoning/subdivision/history and has no real AVM price —
         see models.PropertyLookupCache. Pass force_refresh=True to force 2
-        real calls regardless of any existing cache entry, upgrading a
-        comp_seed row to a full 'full_lookup' one.
+        real calls, upgrading a comp_seed row to a full 'full_lookup' one.
+
+        force_refresh only takes effect against a 'comp_seed' row — an
+        existing 'full_lookup' row is always served from cache regardless
+        of the flag. Callers (e.g. the results page's "refresh with full
+        data" button) only make sense against comp_seed data; honoring the
+        flag unconditionally would let any POST to /analyses force 2 paid
+        RentCast calls on an address that already has a real cached
+        lookup, defeating the whole point of caching.
 
         Returns (avm_json, property_json, from_cache, source).
         """
         normalized = normalize_address(address)
         cached = PropertyLookupCache.query.filter_by(normalized_address=normalized).first()
-        if cached is not None and not force_refresh:
+        should_refresh = force_refresh and cached is not None and cached.source == 'comp_seed'
+        if cached is not None and not should_refresh:
             logger.info('RentCast cache hit for %r (%s) — 0 API calls spent', normalized, cached.source)
             return cached.raw_avm_json, cached.raw_property_json, True, cached.source
 
