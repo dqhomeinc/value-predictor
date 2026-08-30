@@ -28,6 +28,23 @@
   </section>
 
   <section>
+    <h3>Recent sales nearby</h3>
+    {% if analysis.market_value_comps_snapshot %}
+      <div class="radius-selector" role="group" aria-label="Search radius">
+        <button type="button" class="radius-btn" data-radius="5" aria-pressed="false">5 mi</button>
+        <button type="button" class="radius-btn" data-radius="10" aria-pressed="false">10 mi</button>
+        <button type="button" class="radius-btn" data-radius="15" aria-pressed="false">15 mi</button>
+      </div>
+      <ul class="nearby-sales" id="nearby-sales-list"></ul>
+      <p class="muted" id="nearby-sales-empty" hidden>No recent sales within this radius.</p>
+      <script id="nearby-sales-data" type="application/json">{{ analysis.market_value_comps_snapshot | tojson }}</script>
+      <script src="{{ url_for('static', filename='nearby-sales.js') }}"></script>
+    {% else %}
+      <p class="muted">No comparable sales available for this property from RentCast.</p>
+    {% endif %}
+  </section>
+
+  <section>
     <h3>Property details</h3>
     <ul>
       <li>Square footage: {{ analysis.property_sqft }}</li>

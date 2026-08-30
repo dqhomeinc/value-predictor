@@ -144,3 +144,35 @@ table td:last-child {
   padding: 6px 0;
   border-bottom: 1px solid #eee;
 }
+
+.radius-selector {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.radius-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  border: 1px solid #ccc;
+  border-radius: 20px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.radius-btn.active {
+  background: #1a1a1a;
+  color: #fff;
+  border-color: #1a1a1a;
+}
+
+.nearby-sales {
+  list-style: none;
+  padding: 0;
+  font-size: 14px;
+}
+
+.nearby-sales li {
+  padding: 8px 0;
+  border-bottom: 1px solid #eee;
+}

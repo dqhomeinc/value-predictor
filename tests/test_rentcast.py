@@ -90,6 +90,15 @@ class TestRentCastClient:
         assert client.session.calls[0]['url'].endswith('/avm/value')
         assert client.session.calls[0]['headers']['X-Api-Key'] == 'test-key'
 
+    def test_get_value_estimate_requests_wide_comps_by_default(self):
+        # So the nearby-sales radius filter (5/10/15 mi) has enough comps
+        # to filter client-side without a second call.
+        client = make_client([FakeResponse(200, VALUE_ESTIMATE_RESPONSE)])
+        client.get_value_estimate('123 Main St, Austin, TX')
+        params = client.session.calls[0]['params']
+        assert params['maxRadius'] == 15
+        assert params['compCount'] == 25
+
     def test_get_property_record_success(self):
         client = make_client([FakeResponse(200, PROPERTY_RECORD_RESPONSE)])
         result = client.get_property_record('123 Main St, Austin, TX')
