@@ -27,11 +27,22 @@ class PropertyLookupCache(db.Model):
     (no expiry — RentCast's terms place no limit on retention). Protects
     the ~50 calls/month free-tier quota: a cache hit costs 0 calls, a miss
     costs 2 (Value Estimate + Property Records).
+
+    Rows can come from two sources, tracked in `source`:
+    - 'full_lookup' — a real 2-call fetch. raw_avm_json/raw_property_json
+      are genuine RentCast responses.
+    - 'comp_seed' — pre-seeded for free from another address's Value
+      Estimate comparables[], costing 0 extra calls. raw_avm_json/
+      raw_property_json are constructed from that comp's partial data
+      (no zoning/subdivision/history, no comps of its own, no real AVM
+      price — see integrations/rentcast.py's seeding logic) and should
+      never overwrite an existing 'full_lookup' row for the same address.
     """
     __tablename__ = 'property_lookup_cache'
 
     id = db.Column(db.Integer, primary_key=True)
     normalized_address = db.Column(db.String(255), unique=True, nullable=False)
+    source = db.Column(db.String(20), nullable=False, server_default='full_lookup')
     # Value Estimate (AVM) response: subject property characteristics,
     # market value estimate, and comps — all in one payload.
     raw_avm_json = db.Column(db.JSON, nullable=True)
@@ -81,7 +92,7 @@ class Analysis(db.Model):
 
     # Market value benchmark (services/market_value.py)
     market_value_estimate = db.Column(db.Float, nullable=True)
-    market_value_method = db.Column(db.String(30), nullable=True)  # 'rentcast_avm' | 'comps_median_sqft'
+    market_value_method = db.Column(db.String(30), nullable=True)  # 'rentcast_avm' | 'comps_median_sqft' | 'comp_cached'
     market_value_confidence = db.Column(db.String(10), nullable=True)  # 'high' | 'low' — derived, not from the API
     market_value_comps_count = db.Column(db.Integer, nullable=True)
     market_value_comps_snapshot = db.Column(db.JSON, nullable=True)

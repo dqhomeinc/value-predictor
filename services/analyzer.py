@@ -9,7 +9,7 @@ import logging
 
 from integrations.rentcast import RentCastClient
 from models import Analysis, db
-from services.market_value import estimate_market_value
+from services.market_value import MarketValueEstimate, MarketValueUnavailableError, estimate_market_value
 from services.rebuild_calc import calculate_rebuild_deal
 
 logger = logging.getLogger(__name__)
@@ -25,20 +25,46 @@ class AnalysisError(Exception):
     """
 
 
-def run_analysis(user, address, purchase_price, cost_per_sqft, profit_margin_pct, rentcast_client):
+def run_analysis(user, address, purchase_price, cost_per_sqft, profit_margin_pct, rentcast_client, force_refresh=False):
     """
     profit_margin_pct is a whole-number percentage (20 for a 20% target
     margin) — the human-friendly unit used everywhere outside
     rebuild_calc.py, which wants a fraction (0.20).
 
+    force_refresh forces 2 real RentCast calls even if this address only
+    has a 'comp_seed' (partial, pre-seeded-for-free from another address's
+    comps) cache entry — see integrations/rentcast.py's lookup_property.
+
     Raises integrations.rentcast.RentCastError,
     services.market_value.MarketValueUnavailableError, or AnalysisError on
     failure. Does not catch any of them — that's the caller's job.
     """
-    avm_json, property_json, from_cache = rentcast_client.lookup_property(address)
-    logger.info('Analysis for %r: RentCast data %s', address, 'from cache' if from_cache else 'freshly fetched')
+    avm_json, property_json, from_cache, source = rentcast_client.lookup_property(address, force_refresh=force_refresh)
+    logger.info(
+        'Analysis for %r: RentCast data %s (source=%s)',
+        address, 'from cache' if from_cache else 'freshly fetched', source,
+    )
 
-    market_value = estimate_market_value(avm_json)
+    if source == 'comp_seed':
+        # Pre-seeded for free from another address's comps — no zoning/
+        # subdivision/history, no independent AVM computation. Use the
+        # comp's own sale/listing price directly, explicitly labeled
+        # low-confidence, rather than running it through
+        # estimate_market_value() (which would just see 0 comps and no
+        # way to compute a fallback either).
+        price = avm_json.get('price')
+        if price is None:
+            raise MarketValueUnavailableError(
+                f'Comp-cached data for {address!r} has no price — try again with force_refresh'
+            )
+        market_value = MarketValueEstimate(
+            market_value_estimate=price,
+            market_value_method='comp_cached',
+            market_value_confidence='low',
+            market_value_comps_count=0,
+        )
+    else:
+        market_value = estimate_market_value(avm_json)
 
     subject = avm_json.get('subjectProperty') or {}
     property_sqft = subject.get('squareFootage')

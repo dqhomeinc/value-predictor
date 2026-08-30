@@ -33,7 +33,7 @@ def main():
     with app.app_context():
         client = RentCastClient(api_key=api_key)
         try:
-            avm_json, property_json, from_cache = client.lookup_property(address)
+            avm_json, property_json, from_cache, source = client.lookup_property(address)
         except RentCastError as exc:
             print(f'RentCast lookup failed: {exc}')
             sys.exit(1)
@@ -45,7 +45,7 @@ def main():
         comps = avm_json.get('comparables', [])
 
         print(f'Address:        {address}')
-        print(f"From cache:     {from_cache}  ({'0' if from_cache else '2'} API calls spent)")
+        print(f"From cache:     {from_cache} (source={source})  ({'0' if from_cache else '2'} API calls spent)")
         print(f'Market value:   {f"${price:,}" if price is not None else "(unavailable)"}')
         if price_low is not None and price_high is not None:
             print(f'Price range:    ${price_low:,} - ${price_high:,}')

@@ -1,7 +1,7 @@
 import pytest
 
 from integrations.rentcast import RentCastClient, RentCastNotFoundError
-from models import Analysis, User, db
+from models import Analysis, PropertyLookupCache, User, db
 from services.analyzer import AnalysisError, run_analysis
 from services.market_value import MarketValueUnavailableError
 
@@ -211,3 +211,101 @@ class TestRunAnalysis:
 
         assert len(client.session.calls) == 2  # not 4
         assert Analysis.query.count() == 2
+
+
+class TestRunAnalysisWithCompCachedData:
+    def test_uses_comp_price_as_low_confidence_market_value(self, app, user):
+        db.session.add(PropertyLookupCache(
+            normalized_address='456 OAK AVE, AUSTIN, TX',
+            source='comp_seed',
+            raw_avm_json={
+                'price': 245_000,
+                'priceRangeLow': None,
+                'priceRangeHigh': None,
+                'subjectProperty': {'squareFootage': 1800, 'bedrooms': 3, 'bathrooms': 2},
+                'comparables': [],
+            },
+            raw_property_json={'zoning': None, 'subdivision': None, 'history': None},
+        ))
+        db.session.commit()
+
+        client = make_client([])  # comp-cached hit — no live call should happen
+
+        analysis = run_analysis(
+            user=user,
+            address='456 Oak Ave, Austin, TX',
+            purchase_price=150_000,
+            cost_per_sqft=100,
+            profit_margin_pct=20,
+            rentcast_client=client,
+        )
+
+        assert client.session.calls == []
+        assert analysis.market_value_estimate == 245_000
+        assert analysis.market_value_method == 'comp_cached'
+        assert analysis.market_value_confidence == 'low'
+        assert analysis.market_value_comps_count == 0
+        # Property characteristics still came through from the seeded data.
+        assert analysis.property_sqft == 1800
+        # But zoning/subdivision/history genuinely weren't fetched.
+        assert analysis.property_zoning is None
+        assert analysis.property_sale_history is None
+
+    def test_comp_cached_with_no_price_raises_market_value_unavailable(self, app, user):
+        db.session.add(PropertyLookupCache(
+            normalized_address='456 OAK AVE, AUSTIN, TX',
+            source='comp_seed',
+            raw_avm_json={
+                'price': None,
+                'subjectProperty': {'squareFootage': 1800},
+                'comparables': [],
+            },
+            raw_property_json={'zoning': None, 'subdivision': None, 'history': None},
+        ))
+        db.session.commit()
+
+        client = make_client([])
+
+        with pytest.raises(MarketValueUnavailableError):
+            run_analysis(
+                user=user,
+                address='456 Oak Ave, Austin, TX',
+                purchase_price=150_000,
+                cost_per_sqft=100,
+                profit_margin_pct=20,
+                rentcast_client=client,
+            )
+
+        assert Analysis.query.count() == 0
+
+    def test_force_refresh_upgrades_comp_cached_to_a_real_lookup(self, app, user):
+        db.session.add(PropertyLookupCache(
+            normalized_address='123 MAIN ST, AUSTIN, TX',
+            source='comp_seed',
+            raw_avm_json={'price': 245_000, 'subjectProperty': {'squareFootage': 1800}, 'comparables': []},
+            raw_property_json={'zoning': None, 'subdivision': None, 'history': None},
+        ))
+        db.session.commit()
+
+        client = make_client([
+            FakeResponse(200, VALUE_ESTIMATE_RESPONSE),
+            FakeResponse(200, PROPERTY_RECORD_RESPONSE),
+        ])
+
+        analysis = run_analysis(
+            user=user,
+            address='123 Main St, Austin, TX',
+            purchase_price=200_000,
+            cost_per_sqft=100,
+            profit_margin_pct=20,
+            rentcast_client=client,
+            force_refresh=True,
+        )
+
+        assert len(client.session.calls) == 2
+        assert analysis.market_value_method == 'rentcast_avm'
+        assert analysis.market_value_confidence == 'high'
+        assert analysis.property_zoning == 'R-1'
+
+        row = PropertyLookupCache.query.filter_by(normalized_address='123 MAIN ST, AUSTIN, TX').first()
+        assert row.source == 'full_lookup'

@@ -67,6 +67,7 @@ def make_logged_in_analysis(
     property_latitude=None,
     property_longitude=None,
     market_value_comps_snapshot=None,
+    market_value_method='rentcast_avm',
 ):
     client.post('/register', data={
         'username': 'flipper', 'email': 'f@example.com', 'password': 'correcthorsebatterystaple',
@@ -81,7 +82,7 @@ def make_logged_in_analysis(
         initial_profit_margin_pct=20,
         property_sqft=2000,
         market_value_estimate=500_000,
-        market_value_method='rentcast_avm',
+        market_value_method=market_value_method,
         market_value_confidence='high',
         market_value_comps_count=3,
         market_value_comps_snapshot=market_value_comps_snapshot,
@@ -241,3 +242,30 @@ class TestAnalysisResultsNearbySales:
 
         assert response.status_code == 200
         assert 'No comparable sales available' in html
+
+
+class TestAnalysisResultsCompCachedBanner:
+    def test_shows_limited_data_banner_and_refresh_form_for_comp_cached(self, client):
+        analysis = make_logged_in_analysis(client, market_value_method='comp_cached')
+
+        response = client.get(f'/analyses/{analysis.id}')
+        html = response.data.decode()
+
+        assert response.status_code == 200
+        assert 'Limited data' in html
+        assert 'Refresh with full data' in html
+        assert 'name="force_refresh" value="1"' in html
+        # The refresh form resubmits the same inputs the analysis was
+        # originally created with.
+        assert f'value="{analysis.address}"' in html
+        assert 'single prior comp sale/listing' in html
+
+    def test_no_banner_for_a_normal_avm_analysis(self, client):
+        analysis = make_logged_in_analysis(client, market_value_method='rentcast_avm')
+
+        response = client.get(f'/analyses/{analysis.id}')
+        html = response.data.decode()
+
+        assert response.status_code == 200
+        assert 'Limited data' not in html
+        assert 'Refresh with full data' not in html
