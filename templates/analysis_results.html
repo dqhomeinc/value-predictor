@@ -10,6 +10,25 @@
   <p><a href="{{ url_for('main.index') }}">&larr; New analysis</a> &middot; <a href="{{ url_for('main.analyses') }}">Past analyses</a></p>
   <h1>{{ analysis.address }}</h1>
 
+  {% if analysis.market_value_method == 'comp_cached' %}
+    <section class="limited-data-banner">
+      <p>
+        <strong>Limited data.</strong> This address was seen as a nearby comp in another
+        analysis, not looked up directly — market value is a single prior sale/listing
+        price, and zoning, subdivision, and sale history weren't fetched at all.
+      </p>
+      <form method="post" action="{{ url_for('main.analyses') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="address" value="{{ analysis.address }}">
+        <input type="hidden" name="purchase_price" value="{{ analysis.purchase_price }}">
+        <input type="hidden" name="cost_per_sqft" value="{{ analysis.initial_cost_per_sqft }}">
+        <input type="hidden" name="profit_margin_pct" value="{{ analysis.initial_profit_margin_pct }}">
+        <input type="hidden" name="force_refresh" value="1">
+        <button type="submit">Refresh with full data (spends 2 RentCast calls)</button>
+      </form>
+    </section>
+  {% endif %}
+
   <section class="verdict {{ 'worth-it' if analysis.is_worth_it else 'not-worth-it' }}" id="verdict">
     <h2 id="verdict-label">{{ 'Worth It' if analysis.is_worth_it else 'Not Worth It' }}</h2>
     <p>Achievable margin at current market value: <strong id="achievable-margin">{{ '%.1f'|format(analysis.achievable_margin_pct) }}%</strong></p>
@@ -22,7 +41,11 @@
       <span class="badge badge-{{ analysis.market_value_confidence }}">{{ analysis.market_value_confidence }} confidence</span>
     </p>
     <p class="muted">
-      Method: {{ 'RentCast AVM' if analysis.market_value_method == 'rentcast_avm' else 'Comps median $/sqft (fallback)' }},
+      Method:
+      {%- if analysis.market_value_method == 'rentcast_avm' %} RentCast AVM
+      {%- elif analysis.market_value_method == 'comp_cached' %} single prior comp sale/listing (see banner above)
+      {%- else %} Comps median $/sqft (fallback)
+      {%- endif -%},
       based on {{ analysis.market_value_comps_count }} comp{{ '' if analysis.market_value_comps_count == 1 else 's' }}.
     </p>
   </section>

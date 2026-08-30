@@ -370,3 +370,28 @@ class TestForceRefresh:
         assert len(client.session.calls) == 2
         assert from_cache is False
         assert source == 'full_lookup'
+
+    def test_force_refresh_is_ignored_for_an_existing_full_lookup_row(self, app):
+        # Guards against any POST to /analyses (a normal new-analysis
+        # submission, or a resubmit of an address already fully looked
+        # up) forcing 2 real paid RentCast calls just by including
+        # force_refresh=1 — that flag should only ever upgrade a partial
+        # comp_seed row, never bypass a real cache entry.
+        db.session.add(PropertyLookupCache(
+            normalized_address='123 MAIN ST, AUSTIN, TX',
+            source='full_lookup',
+            raw_avm_json=VALUE_ESTIMATE_RESPONSE,
+            raw_property_json=PROPERTY_RECORD_RESPONSE[0],
+        ))
+        db.session.commit()
+
+        client = make_client([])  # a live call would raise
+
+        avm_json, _property_json, from_cache, source = client.lookup_property(
+            '123 Main St, Austin, TX', force_refresh=True
+        )
+
+        assert len(client.session.calls) == 0
+        assert from_cache is True
+        assert source == 'full_lookup'
+        assert avm_json['price'] == VALUE_ESTIMATE_RESPONSE['price']

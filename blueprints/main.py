@@ -80,6 +80,12 @@ def analyses():
         flash('Property data is temporarily unavailable. Please try again later.', 'error')
         return render_template('index.html', form_values=form_values), 503
 
+    # Set from the results page's "Refresh with full data" button, to
+    # upgrade a comp_cached analysis (see services/analyzer.py) to a real
+    # lookup — spends 2 real RentCast calls where a normal submission of
+    # an address seen before as a comp would otherwise spend 0.
+    force_refresh = request.form.get('force_refresh') == '1'
+
     client = build_rentcast_client(api_key)
     try:
         analysis = run_analysis(
@@ -89,6 +95,7 @@ def analyses():
             cost_per_sqft=cost_per_sqft,
             profit_margin_pct=profit_margin_pct,
             rentcast_client=client,
+            force_refresh=force_refresh,
         )
     except ANALYSIS_FAILURE_ERRORS as exc:
         logger.warning('Analysis failed for %r: %s', address, exc)
