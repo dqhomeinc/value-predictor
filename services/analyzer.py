@@ -35,7 +35,9 @@ def run_analysis(user, address, purchase_price, cost_per_sqft, profit_margin_pct
     services.market_value.MarketValueUnavailableError, or AnalysisError on
     failure. Does not catch any of them — that's the caller's job.
     """
-    avm_json, property_json, from_cache = rentcast_client.lookup_property(address)
+    # `source` ('full_lookup' | 'comp_seed') is unused here for now —
+    # handling comp_seed's partial data specially is a follow-up change.
+    avm_json, property_json, from_cache, _source = rentcast_client.lookup_property(address)
     logger.info('Analysis for %r: RentCast data %s', address, 'from cache' if from_cache else 'freshly fetched')
 
     market_value = estimate_market_value(avm_json)

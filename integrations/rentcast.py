@@ -57,7 +57,7 @@ class RentCastClient:
     """
     Usage:
         client = RentCastClient(api_key=os.environ['RENTCAST_API_KEY'])
-        avm_json, property_json, from_cache = client.lookup_property(address)
+        avm_json, property_json, from_cache, source = client.lookup_property(address)
     """
 
     def __init__(self, api_key, session=None, base_url=RENTCAST_BASE_URL, timeout=DEFAULT_TIMEOUT):
@@ -120,28 +120,45 @@ class RentCastClient:
             raise RentCastNotFoundError(f'No property record found for address={address!r}')
         return records[0]
 
-    def lookup_property(self, address):
+    def lookup_property(self, address, force_refresh=False):
         """
         Address in, full property snapshot out — from cache if we've seen
         this address before, otherwise via 2 live RentCast calls (which are
-        then cached indefinitely).
+        then cached indefinitely, and used to free-seed cache rows for any
+        comps returned alongside it — see _seed_comps_cache, 0 extra calls).
 
-        Returns (avm_json, property_json, from_cache).
+        A cache hit whose source is 'comp_seed' (pre-seeded for free from
+        another address's comps, not looked up for this address directly)
+        is missing zoning/subdivision/history and has no real AVM price —
+        see models.PropertyLookupCache. Pass force_refresh=True to force 2
+        real calls regardless of any existing cache entry, upgrading a
+        comp_seed row to a full 'full_lookup' one.
+
+        Returns (avm_json, property_json, from_cache, source).
         """
         normalized = normalize_address(address)
         cached = PropertyLookupCache.query.filter_by(normalized_address=normalized).first()
-        if cached is not None:
-            logger.info('RentCast cache hit for %r — 0 API calls spent', normalized)
-            return cached.raw_avm_json, cached.raw_property_json, True
+        if cached is not None and not force_refresh:
+            logger.info('RentCast cache hit for %r (%s) — 0 API calls spent', normalized, cached.source)
+            return cached.raw_avm_json, cached.raw_property_json, True, cached.source
 
         avm_json = self.get_value_estimate(address)
         property_json = self.get_property_record(address)
 
-        db.session.add(PropertyLookupCache(
-            normalized_address=normalized,
-            raw_avm_json=avm_json,
-            raw_property_json=property_json,
-        ))
+        if cached is not None:
+            # force_refresh upgrading an existing row (typically comp_seed)
+            # to a real one, in place — normalized_address is unique, so
+            # this must be an UPDATE, not a second INSERT.
+            cached.source = 'full_lookup'
+            cached.raw_avm_json = avm_json
+            cached.raw_property_json = property_json
+        else:
+            db.session.add(PropertyLookupCache(
+                normalized_address=normalized,
+                source='full_lookup',
+                raw_avm_json=avm_json,
+                raw_property_json=property_json,
+            ))
         try:
             db.session.commit()
         except IntegrityError:
@@ -156,8 +173,62 @@ class RentCastClient:
                 'RentCast cache write race for %r — another request already cached it', normalized
             )
             cached = PropertyLookupCache.query.filter_by(normalized_address=normalized).first()
-            return cached.raw_avm_json, cached.raw_property_json, True
+            return cached.raw_avm_json, cached.raw_property_json, True, cached.source
 
         logger.info('RentCast cache miss for %r — 2 API calls spent, now cached', normalized)
+        self._seed_comps_cache(avm_json.get('comparables') or [])
 
-        return avm_json, property_json, False
+        return avm_json, property_json, False, 'full_lookup'
+
+    def _seed_comps_cache(self, comparables):
+        """
+        Pre-seed property_lookup_cache from a Value Estimate response's
+        comparables[] — for free, since this data is already part of the
+        response just paid for. Skips any address already cached under
+        any source, so a real 'full_lookup' row is never clobbered by
+        partial comp data, and nothing gets seeded twice.
+
+        The resulting rows are deliberately partial: no zoning/subdivision
+        /history (Property Records-only fields), no comps of their own,
+        and their "market value" is just the comp's own sale/listing
+        price, not an independent AVM computation — see
+        models.PropertyLookupCache and services/analyzer.py's handling of
+        source == 'comp_seed'.
+        """
+        for comp in comparables:
+            address = comp.get('formattedAddress')
+            if not address:
+                continue
+            normalized = normalize_address(address)
+            if PropertyLookupCache.query.filter_by(normalized_address=normalized).first() is not None:
+                continue
+
+            db.session.add(PropertyLookupCache(
+                normalized_address=normalized,
+                source='comp_seed',
+                raw_avm_json={
+                    'price': comp.get('price'),
+                    'priceRangeLow': None,
+                    'priceRangeHigh': None,
+                    'subjectProperty': {
+                        'squareFootage': comp.get('squareFootage'),
+                        'lotSize': comp.get('lotSize'),
+                        'bedrooms': comp.get('bedrooms'),
+                        'bathrooms': comp.get('bathrooms'),
+                        'yearBuilt': comp.get('yearBuilt'),
+                        'latitude': comp.get('latitude'),
+                        'longitude': comp.get('longitude'),
+                    },
+                    'comparables': [],
+                },
+                raw_property_json={'zoning': None, 'subdivision': None, 'history': None},
+            ))
+
+        try:
+            db.session.commit()
+        except IntegrityError:
+            # A concurrent request seeded (or fully looked up) one of
+            # these same addresses first — fine, just drop this attempt
+            # rather than fail the whole lookup over a free side effect.
+            db.session.rollback()
+            logger.warning('Comp cache seeding race — another request seeded an overlapping address')

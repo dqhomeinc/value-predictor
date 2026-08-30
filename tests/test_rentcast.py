@@ -128,9 +128,10 @@ class TestLookupProperty:
             FakeResponse(200, PROPERTY_RECORD_RESPONSE),
         ])
 
-        avm_json, property_json, from_cache = client.lookup_property('123 Main St, Austin, TX')
+        avm_json, property_json, from_cache, source = client.lookup_property('123 Main St, Austin, TX')
 
         assert from_cache is False
+        assert source == 'full_lookup'
         assert avm_json['price'] == 250000
         assert property_json['zoning'] == 'R-1'
         assert len(client.session.calls) == 2
@@ -139,6 +140,7 @@ class TestLookupProperty:
             normalized_address='123 MAIN ST, AUSTIN, TX'
         ).first()
         assert row is not None
+        assert row.source == 'full_lookup'
         assert row.raw_avm_json['price'] == 250000
         assert row.raw_property_json['zoning'] == 'R-1'
 
@@ -151,11 +153,12 @@ class TestLookupProperty:
         PropertyLookupCache.query.session.commit()
 
         client = make_client([])  # no responses queued — a live call would raise
-        avm_json, property_json, from_cache = client.lookup_property(
+        avm_json, property_json, from_cache, source = client.lookup_property(
             '123  main st, austin, tx'
         )
 
         assert from_cache is True
+        assert source == 'full_lookup'
         assert avm_json['price'] == 250000
         assert property_json['zoning'] == 'R-1'
         assert client.session.calls == []
@@ -202,12 +205,13 @@ class TestLookupProperty:
 
         monkeypatch.setattr(db.session, 'commit', racing_commit)
 
-        avm_json, property_json, from_cache = client.lookup_property('123 Main St, Austin, TX')
+        avm_json, property_json, from_cache, source = client.lookup_property('123 Main St, Austin, TX')
 
         # Both live calls still happened — the race is only discovered at
         # commit time — but the request recovers instead of 500ing.
         assert len(client.session.calls) == 2
         assert from_cache is True
+        assert source == 'full_lookup'
         assert avm_json == VALUE_ESTIMATE_RESPONSE
         assert property_json == PROPERTY_RECORD_RESPONSE[0]
 
@@ -215,3 +219,154 @@ class TestLookupProperty:
         assert PropertyLookupCache.query.filter_by(
             normalized_address='123 MAIN ST, AUSTIN, TX'
         ).count() == 1
+
+
+VALUE_ESTIMATE_WITH_ADDRESSED_COMPS = {
+    'price': 250000,
+    'priceRangeLow': 240000,
+    'priceRangeHigh': 260000,
+    'subjectProperty': {'squareFootage': 1878, 'bedrooms': 3, 'bathrooms': 2, 'yearBuilt': 1973},
+    'comparables': [
+        {
+            'formattedAddress': '456 Oak Ave, Austin, TX',
+            'price': 245000,
+            'squareFootage': 1800,
+            'bedrooms': 3,
+            'bathrooms': 2,
+            'yearBuilt': 1968,
+            'lotSize': 5000,
+            'latitude': 30.1,
+            'longitude': -97.1,
+        },
+        {
+            'formattedAddress': '789 Pine Ln, Austin, TX',
+            'price': 260000,
+            'squareFootage': 1950,
+            'bedrooms': 4,
+            'bathrooms': 2.5,
+        },
+        {'price': 255000},  # no formattedAddress — must not be seeded
+    ],
+}
+
+
+class TestCompSeeding:
+    def test_seeds_addressed_comps_for_free_on_a_real_lookup(self, app):
+        client = make_client([
+            FakeResponse(200, VALUE_ESTIMATE_WITH_ADDRESSED_COMPS),
+            FakeResponse(200, PROPERTY_RECORD_RESPONSE),
+        ])
+
+        client.lookup_property('123 Main St, Austin, TX')
+
+        # No extra HTTP calls for seeding — still exactly the 2 for the
+        # subject address itself.
+        assert len(client.session.calls) == 2
+
+        oak = PropertyLookupCache.query.filter_by(normalized_address='456 OAK AVE, AUSTIN, TX').first()
+        assert oak is not None
+        assert oak.source == 'comp_seed'
+        assert oak.raw_avm_json['price'] == 245000
+        assert oak.raw_avm_json['subjectProperty']['squareFootage'] == 1800
+        assert oak.raw_avm_json['subjectProperty']['bedrooms'] == 3
+        assert oak.raw_avm_json['comparables'] == []
+        assert oak.raw_property_json == {'zoning': None, 'subdivision': None, 'history': None}
+
+        pine = PropertyLookupCache.query.filter_by(normalized_address='789 PINE LN, AUSTIN, TX').first()
+        assert pine is not None
+        assert pine.source == 'comp_seed'
+
+    def test_comp_without_address_is_not_seeded(self, app):
+        client = make_client([
+            FakeResponse(200, VALUE_ESTIMATE_WITH_ADDRESSED_COMPS),
+            FakeResponse(200, PROPERTY_RECORD_RESPONSE),
+        ])
+
+        client.lookup_property('123 Main St, Austin, TX')
+
+        # subject + 2 addressed comps = 3 rows; the addressless comp seeds nothing.
+        assert PropertyLookupCache.query.count() == 3
+
+    def test_does_not_overwrite_an_existing_full_lookup_row(self, app):
+        # 456 Oak Ave was already fully looked up in its own right — a
+        # comp sighting of it elsewhere must not clobber that real data.
+        db.session.add(PropertyLookupCache(
+            normalized_address='456 OAK AVE, AUSTIN, TX',
+            source='full_lookup',
+            raw_avm_json={'price': 999999, 'subjectProperty': {}, 'comparables': []},
+            raw_property_json={'zoning': 'R-2', 'subdivision': 'Real Data', 'history': None},
+        ))
+        db.session.commit()
+
+        client = make_client([
+            FakeResponse(200, VALUE_ESTIMATE_WITH_ADDRESSED_COMPS),
+            FakeResponse(200, PROPERTY_RECORD_RESPONSE),
+        ])
+        client.lookup_property('123 Main St, Austin, TX')
+
+        oak = PropertyLookupCache.query.filter_by(normalized_address='456 OAK AVE, AUSTIN, TX').first()
+        assert oak.source == 'full_lookup'
+        assert oak.raw_avm_json['price'] == 999999
+        assert oak.raw_property_json['subdivision'] == 'Real Data'
+
+    def test_cache_hit_does_not_reseed(self, app):
+        # Pre-existing cache hit for the subject address — lookup_property
+        # returns early and never even sees the comps, so nothing new
+        # should be seeded.
+        db.session.add(PropertyLookupCache(
+            normalized_address='123 MAIN ST, AUSTIN, TX',
+            source='full_lookup',
+            raw_avm_json=VALUE_ESTIMATE_WITH_ADDRESSED_COMPS,
+            raw_property_json=PROPERTY_RECORD_RESPONSE[0],
+        ))
+        db.session.commit()
+
+        client = make_client([])  # a live call would raise
+        client.lookup_property('123 Main St, Austin, TX')
+
+        assert PropertyLookupCache.query.count() == 1
+
+
+class TestForceRefresh:
+    def test_force_refresh_spends_two_calls_despite_existing_cache_entry(self, app):
+        db.session.add(PropertyLookupCache(
+            normalized_address='456 OAK AVE, AUSTIN, TX',
+            source='comp_seed',
+            raw_avm_json={'price': 245000, 'subjectProperty': {}, 'comparables': []},
+            raw_property_json={'zoning': None, 'subdivision': None, 'history': None},
+        ))
+        db.session.commit()
+
+        client = make_client([
+            FakeResponse(200, VALUE_ESTIMATE_RESPONSE),
+            FakeResponse(200, PROPERTY_RECORD_RESPONSE),
+        ])
+
+        avm_json, property_json, from_cache, source = client.lookup_property(
+            '456 Oak Ave, Austin, TX', force_refresh=True
+        )
+
+        assert len(client.session.calls) == 2
+        assert from_cache is False
+        assert source == 'full_lookup'
+        assert avm_json['price'] == 250000
+
+        # The existing row was upgraded in place, not duplicated.
+        assert PropertyLookupCache.query.filter_by(normalized_address='456 OAK AVE, AUSTIN, TX').count() == 1
+        row = PropertyLookupCache.query.filter_by(normalized_address='456 OAK AVE, AUSTIN, TX').first()
+        assert row.source == 'full_lookup'
+        assert row.raw_property_json['zoning'] == 'R-1'
+
+    def test_force_refresh_on_a_never_seen_address_behaves_like_a_normal_miss(self, app):
+        client = make_client([
+            FakeResponse(200, VALUE_ESTIMATE_RESPONSE),
+            FakeResponse(200, PROPERTY_RECORD_RESPONSE),
+        ])
+
+        avm_json, property_json, from_cache, source = client.lookup_property(
+            '123 Main St, Austin, TX', force_refresh=True
+        )
+
+        assert len(client.session.calls) == 2
+        assert from_cache is False
+        assert source == 'full_lookup'
