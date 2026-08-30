@@ -94,8 +94,8 @@ class RentCastClient:
         Value Estimate (AVM) endpoint. Returns `price`, `priceRangeLow`/
         `priceRangeHigh`, `subjectProperty` (bedrooms, bathrooms,
         squareFootage, lotSize, yearBuilt, ...), and `comparables`
-        (address, price, bedrooms, bathrooms, squareFootage, distance,
-        ...) — all in one call. https://developers.rentcast.io/reference/value-estimate
+        (formattedAddress, price, bedrooms, bathrooms, squareFootage,
+        distance, ...) — all in one call. https://developers.rentcast.io/reference/value-estimate
 
         max_radius/comp_count default to the widest RentCast allows
         (compCount maxes at 25) so the results page's nearby-sales radius

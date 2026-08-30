@@ -48,15 +48,22 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function selectButton(selected) {
+    buttons.forEach((b) => {
+      const isSelected = b === selected;
+      b.classList.toggle('active', isSelected);
+      b.setAttribute('aria-pressed', isSelected);
+    });
+  }
+
   buttons.forEach((button) => {
     button.addEventListener('click', () => {
-      buttons.forEach((b) => b.classList.remove('active'));
-      button.classList.add('active');
+      selectButton(button);
       render(parseInt(button.dataset.radius, 10));
     });
   });
 
   // Default to the smallest radius — closest, most relevant comps first.
-  buttons[0].classList.add('active');
+  selectButton(buttons[0]);
   render(parseInt(buttons[0].dataset.radius, 10));
 });
