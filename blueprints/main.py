@@ -6,7 +6,12 @@ from flask_login import current_user, login_required
 
 from integrations.rentcast import RentCastError
 from models import Analysis
-from services.analyzer import AnalysisError, build_rentcast_client, run_analysis
+from services.analyzer import (
+    AnalysisError,
+    build_rentcast_client,
+    rentcast_mock_enabled,
+    run_analysis,
+)
 from services.market_value import MarketValueUnavailableError
 
 main_bp = Blueprint('main', __name__)
@@ -75,7 +80,9 @@ def analyses():
         return render_template('index.html', form_values=form_values), 400
 
     api_key = os.environ.get('RENTCAST_API_KEY')
-    if not api_key:
+    # Mock mode (see services.analyzer.rentcast_mock_enabled, on by default
+    # for local dev) serves synthetic data without ever needing a real key.
+    if not api_key and not rentcast_mock_enabled():
         logger.error('RENTCAST_API_KEY is not set — cannot run analysis')
         flash('Property data is temporarily unavailable. Please try again later.', 'error')
         return render_template('index.html', form_values=form_values), 503
