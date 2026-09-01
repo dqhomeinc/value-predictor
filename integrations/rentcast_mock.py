@@ -96,10 +96,16 @@ class MockRentCastSession:
         # has something to show for most addresses rather than always
         # falling back to "not enough data".
         year_built = this_year - rng.randint(0, 2) if index % 2 == 0 else rng.randint(1950, this_year - 10)
+        # Street number/name drawn from the rng (seeded per subject
+        # address), not just `index` — otherwise every subject address's
+        # Nth comp would be the identical "<N> Mock <street>" string, and
+        # RentCastClient._seed_comps_cache (which dedupes by normalized
+        # address) would silently skip seeding comps for every address
+        # analyzed after the first in a dev session.
+        street_number = rng.randint(100, 9999)
+        street_name = rng.choice(MOCK_STREET_NAMES)
         return {
-            'formattedAddress': (
-                f'{100 + index} Mock {MOCK_STREET_NAMES[index % len(MOCK_STREET_NAMES)]} St, Mockville, TX'
-            ),
+            'formattedAddress': f'{street_number} Mock {street_name} St, Mockville, TX',
             'price': sqft * rng.randint(150, 450),
             'bedrooms': rng.randint(2, 5),
             'bathrooms': rng.choice([1, 1.5, 2, 2.5, 3]),

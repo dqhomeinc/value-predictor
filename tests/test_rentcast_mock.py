@@ -44,6 +44,24 @@ class TestValueEstimate:
 
         assert first != second
 
+    def test_comp_addresses_do_not_collide_across_different_subject_addresses(self, session):
+        # Regression: comp formattedAddress used to be derived only from
+        # the comp's index within the list, so every subject address's
+        # first comp was the identical "100 Mock Oak St..." string.
+        # RentCastClient._seed_comps_cache dedupes by normalized address,
+        # so a collision like that would silently skip seeding comps for
+        # every address analyzed after the first in a dev session.
+        first = session.get(
+            'https://api.rentcast.io/v1/avm/value', params={'address': '123 Main St, Austin, TX'}
+        ).json()
+        second = session.get(
+            'https://api.rentcast.io/v1/avm/value', params={'address': '456 Oak Ave, Dallas, TX'}
+        ).json()
+
+        first_addresses = {comp['formattedAddress'] for comp in first['comparables']}
+        second_addresses = {comp['formattedAddress'] for comp in second['comparables']}
+        assert first_addresses.isdisjoint(second_addresses)
+
     def test_address_normalization_does_not_change_the_result(self, session):
         # Same intent as integrations.rentcast.normalize_address — casing/
         # whitespace differences shouldn't produce a different fake property.
