@@ -113,23 +113,43 @@ def run_analysis(user, address, purchase_price, cost_per_sqft, profit_margin_pct
     return analysis
 
 
+def rentcast_mock_enabled():
+    """
+    Whether to serve synthetic property data (see
+    integrations/rentcast_mock.py) instead of spending real RentCast calls
+    — defaults ON for local dev (no DATABASE_URL set, the same signal
+    app.create_app() uses to detect a deployed environment) so mock mode
+    doesn't require remembering to opt in, and free-tier quota
+    (~50 calls/month) isn't burned by routine manual testing.
+
+    An explicit RENTCAST_MOCK always wins over the default:
+      RENTCAST_MOCK=0 — opt out locally, e.g. to verify against real
+      RentCast data before a PR.
+      RENTCAST_MOCK=1 — force mock on; still refused by
+      build_rentcast_client() wherever DATABASE_URL is set (see there).
+    """
+    mock_env = os.environ.get('RENTCAST_MOCK')
+    if mock_env is None:
+        return not os.environ.get('DATABASE_URL')
+    return mock_env == '1'
+
+
 def build_rentcast_client(api_key):
     """
-    RENTCAST_MOCK=1 swaps in synthetic, made-up property data (see
-    integrations/rentcast_mock.py) instead of real RentCast calls — for
-    burning through the free-tier ~50 calls/month during local dev/manual
-    testing. Refuses to activate wherever DATABASE_URL is set, the same
-    signal app.create_app() uses to detect a deployed environment (Render)
-    — this must never be what a real user's analysis is computed from.
+    See rentcast_mock_enabled() for when mock mode applies. Refuses to
+    activate wherever DATABASE_URL is set, the same signal app.create_app()
+    uses to detect a deployed environment (Render) — this must never be
+    what a real user's analysis is computed from, whatever RENTCAST_MOCK
+    is explicitly set to.
     """
-    if os.environ.get('RENTCAST_MOCK') == '1':
+    if rentcast_mock_enabled():
         if os.environ.get('DATABASE_URL'):
             raise RuntimeError(
-                'RENTCAST_MOCK=1 is set in what looks like a deployed environment '
+                'RENTCAST_MOCK is enabled in what looks like a deployed environment '
                 '(DATABASE_URL is set) — refusing to serve synthetic property data. '
                 'Unset RENTCAST_MOCK or DATABASE_URL.'
             )
-        logger.warning('RENTCAST_MOCK=1 — serving synthetic property data, no real RentCast calls will be made')
+        logger.warning('Using synthetic property data (RENTCAST_MOCK) — no real RentCast calls will be made')
         from integrations.rentcast_mock import MockRentCastSession
         return RentCastClient(api_key=api_key or 'mock-mode', session=MockRentCastSession())
 
