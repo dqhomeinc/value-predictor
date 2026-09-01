@@ -6,6 +6,7 @@ about RentCast, market value math, or deal math individually.
 """
 
 import logging
+import os
 
 from integrations.rentcast import RentCastClient
 from models import Analysis, db
@@ -113,4 +114,23 @@ def run_analysis(user, address, purchase_price, cost_per_sqft, profit_margin_pct
 
 
 def build_rentcast_client(api_key):
+    """
+    RENTCAST_MOCK=1 swaps in synthetic, made-up property data (see
+    integrations/rentcast_mock.py) instead of real RentCast calls — for
+    burning through the free-tier ~50 calls/month during local dev/manual
+    testing. Refuses to activate wherever DATABASE_URL is set, the same
+    signal app.create_app() uses to detect a deployed environment (Render)
+    — this must never be what a real user's analysis is computed from.
+    """
+    if os.environ.get('RENTCAST_MOCK') == '1':
+        if os.environ.get('DATABASE_URL'):
+            raise RuntimeError(
+                'RENTCAST_MOCK=1 is set in what looks like a deployed environment '
+                '(DATABASE_URL is set) — refusing to serve synthetic property data. '
+                'Unset RENTCAST_MOCK or DATABASE_URL.'
+            )
+        logger.warning('RENTCAST_MOCK=1 — serving synthetic property data, no real RentCast calls will be made')
+        from integrations.rentcast_mock import MockRentCastSession
+        return RentCastClient(api_key=api_key or 'mock-mode', session=MockRentCastSession())
+
     return RentCastClient(api_key=api_key)

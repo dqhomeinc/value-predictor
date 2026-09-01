@@ -75,7 +75,9 @@ def analyses():
         return render_template('index.html', form_values=form_values), 400
 
     api_key = os.environ.get('RENTCAST_API_KEY')
-    if not api_key:
+    # RENTCAST_MOCK=1 (see services.analyzer.build_rentcast_client) serves
+    # synthetic data without ever needing a real key.
+    if not api_key and os.environ.get('RENTCAST_MOCK') != '1':
         logger.error('RENTCAST_API_KEY is not set — cannot run analysis')
         flash('Property data is temporarily unavailable. Please try again later.', 'error')
         return render_template('index.html', form_values=form_values), 503
