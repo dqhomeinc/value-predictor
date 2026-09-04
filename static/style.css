@@ -1,131 +1,331 @@
+/*
+ * Modern fintech look: deep slate/navy chrome, white content cards, teal
+ * as the single confident accent color. Visual polish only — no selector
+ * here changes what a template renders or what static/*.js queries; every
+ * existing class/id (.radius-btn, #property-map, .verdict.worth-it, etc.)
+ * keeps its exact name and meaning, just restyled. See tests/test_routes.py
+ * for the handful of exact-match assertions (radius-btn's class attribute
+ * in particular) this was written to not disturb.
+ */
+
+:root {
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* Page chrome — the deep navy that sits behind everything. */
+  --page-bg: #0b1220;
+  --page-bg-elevated: #131c2e;
+  --border-on-dark: rgba(226, 232, 240, 0.12);
+  --text-on-dark: #e7ecf5;
+  --text-on-dark-muted: #94a3b8;
+
+  /* Content surfaces — white cards floating on the navy chrome. */
+  --surface: #ffffff;
+  --surface-alt: #f8fafc;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --text-muted: #64748b;
+
+  /* Brand accent (teal) + semantic colors, each with a light "soft" tint
+     for badges/banners and a full-strength version for solid fills. */
+  --accent: #14b8a6;
+  --accent-dark: #0d9488;
+  --accent-soft: #e7faf6;
+  --accent-soft-text: #0f766e;
+
+  --danger: #e2483d;
+  --danger-soft: #fdeeec;
+  --danger-soft-text: #b3261e;
+
+  --warning: #d97706;
+  --warning-soft: #fff6e8;
+  --warning-soft-text: #92400e;
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-pill: 999px;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 16px 32px -16px rgba(15, 23, 42, 0.28);
+}
+
+* {
+  box-sizing: border-box;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  max-width: 640px;
-  margin: 60px auto;
-  padding: 0 20px;
-  color: #1a1a1a;
+  font-family: var(--font-sans);
+  background: var(--page-bg);
+  color: var(--text-on-dark);
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+.site-header {
+  padding: 20px 20px;
+  border-bottom: 1px solid var(--border-on-dark);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 4px;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  color: var(--text-on-dark);
+  text-decoration: none;
+}
+
+.brand::before {
+  content: '';
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.page {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 40px 20px 20px;
+}
+
+h1 {
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  margin: 0 0 20px;
+  color: var(--text-on-dark);
+}
+
+h2, h3 {
+  letter-spacing: -0.01em;
+}
+
+a {
+  color: var(--accent);
 }
 
 .muted {
-  color: #666;
+  color: var(--text-muted);
+}
+
+.page-nav {
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.page-nav a {
+  color: var(--text-on-dark-muted);
+  text-decoration: none;
+}
+
+.page-nav a:hover {
+  color: var(--text-on-dark);
 }
 
 .disclaimer {
-  margin: 60px 0 20px;
-  padding-top: 16px;
-  border-top: 1px solid #eee;
+  max-width: 760px;
+  margin: 48px auto 0;
+  padding: 16px 20px 32px;
+  border-top: 1px solid var(--border-on-dark);
   font-size: 12px;
-  color: #888;
+  color: var(--text-on-dark-muted);
   text-align: center;
 }
 
 .limited-data-banner {
-  margin: 20px 0;
-  padding: 14px 16px;
-  background: #fff4e5;
-  border: 1px solid #f0c896;
-  border-radius: 8px;
+  margin: 0 0 24px;
+  padding: 16px 20px;
+  background: var(--warning-soft);
+  border: 1px solid #f3d9ab;
+  border-radius: var(--radius-md);
   font-size: 14px;
+  color: var(--warning-soft-text);
+}
+
+.limited-data-banner strong {
+  color: inherit;
 }
 
 .limited-data-banner form {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .limited-data-banner button {
-  padding: 6px 14px;
+  padding: 8px 16px;
   font-size: 13px;
+  background: var(--warning);
+}
+
+.limited-data-banner button:hover {
+  background: #b8650a;
 }
 
 form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   margin-top: 20px;
 }
 
 label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
 }
 
 input {
-  padding: 8px;
+  font-family: inherit;
+  padding: 10px 12px;
   font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--surface);
 }
 
 button {
-  padding: 10px;
+  font-family: inherit;
+  padding: 11px 18px;
   font-size: 14px;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  transition: background 0.15s ease, transform 0.05s ease;
+}
+
+button:hover {
+  background: var(--accent-dark);
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+/* The auth pages' second form (register/login toggle has none, but
+   index.html's logout button should read as a quiet secondary action,
+   not compete with the primary "Analyze" button). */
+#analyze-form + form button {
+  background: transparent;
+  color: var(--text-on-dark-muted);
+  border: 1px solid var(--border-on-dark);
+}
+
+#analyze-form + form button:hover {
+  color: var(--text-on-dark);
+  border-color: var(--text-on-dark-muted);
+  background: transparent;
 }
 
 .flashes {
   list-style: none;
   padding: 0;
+  margin: 0 0 20px;
+  max-width: 760px;
 }
 
 .flash-error {
-  color: #b00020;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger-soft-text);
+  font-size: 14px;
 }
 
 section {
-  margin: 24px 0;
+  margin: 20px 0;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  color: var(--text);
+}
+
+section h3 {
+  margin-top: 0;
+  font-size: 15px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
 }
 
 .verdict {
-  padding: 16px 20px;
-  border-radius: 8px;
+  padding: 28px 24px;
+  border-radius: var(--radius-md);
   text-align: center;
+  border: none;
+  box-shadow: var(--shadow-card);
 }
 
 .verdict h2 {
   margin: 0 0 8px;
+  font-size: 24px;
 }
 
 .verdict.worth-it {
-  background: #e6f4ea;
-  color: #1e7e34;
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
 }
 
 .verdict.not-worth-it {
-  background: #fdecea;
-  color: #b00020;
+  background: var(--danger-soft);
+  color: var(--danger-soft-text);
 }
 
 .badge {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
   vertical-align: middle;
 }
 
 .badge-high,
 .badge-worth-it {
-  background: #e6f4ea;
-  color: #1e7e34;
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
 }
 
 .badge-low,
 .badge-not-worth-it {
-  background: #fff4e5;
-  color: #a15c00;
+  background: var(--warning-soft);
+  color: var(--warning-soft-text);
 }
 
 table {
   border-collapse: collapse;
   width: 100%;
   margin-top: 8px;
+  font-size: 14px;
 }
 
 table td {
-  padding: 6px 0;
-  border-bottom: 1px solid #eee;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+table tr:last-child td {
+  border-bottom: none;
 }
 
 table td:last-child {
@@ -136,61 +336,121 @@ table td:last-child {
 .analyses-list {
   list-style: none;
   padding: 0;
-}
-
-#property-map {
-  height: 300px;
-  border-radius: 8px;
-  border: 1px solid #eee;
+  margin: 0;
 }
 
 .analyses-list li {
-  padding: 10px 0;
-  border-bottom: 1px solid #eee;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
+.analyses-list li:last-child {
+  border-bottom: none;
+}
+
+.analyses-list a {
+  flex: 1;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.analyses-list a:hover {
+  color: var(--accent);
+}
+
+#property-map {
+  height: 300px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
 .sale-history {
   list-style: none;
   padding: 0;
+  margin: 0;
   font-size: 14px;
 }
 
 .sale-history li {
-  padding: 6px 0;
-  border-bottom: 1px solid #eee;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sale-history li:last-child {
+  border-bottom: none;
 }
 
 .radius-selector {
   display: flex;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .radius-btn {
-  padding: 6px 14px;
+  padding: 7px 16px;
   font-size: 13px;
-  border: 1px solid #ccc;
-  border-radius: 20px;
-  background: #fff;
+  font-weight: 600;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-alt);
   cursor: pointer;
 }
 
+.radius-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
 .radius-btn.active {
-  background: #1a1a1a;
-  color: #fff;
-  border-color: #1a1a1a;
+  background: var(--accent);
+  color: #ffffff;
+  border-color: var(--accent);
 }
 
 .nearby-sales {
   list-style: none;
   padding: 0;
+  margin: 0;
   font-size: 14px;
 }
 
 .nearby-sales li {
-  padding: 8px 0;
-  border-bottom: 1px solid #eee;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.nearby-sales li:last-child {
+  border-bottom: none;
+}
+
+.auth-card {
+  max-width: 380px;
+  margin: 40px auto 0;
+  padding: 32px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  color: var(--text);
+}
+
+.auth-card h1 {
+  color: var(--text);
+  font-size: 22px;
+}
+
+@media (max-width: 480px) {
+  .page {
+    padding: 24px 16px 16px;
+  }
+
+  section {
+    padding: 18px;
+  }
 }

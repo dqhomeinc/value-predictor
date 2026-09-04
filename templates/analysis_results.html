@@ -7,7 +7,7 @@
   {% endif %}
 {% endblock %}
 {% block content %}
-  <p><a href="{{ url_for('main.index') }}">&larr; New analysis</a> &middot; <a href="{{ url_for('main.analyses') }}">Past analyses</a></p>
+  <p class="page-nav"><a href="{{ url_for('main.index') }}">&larr; New analysis</a> &middot; <a href="{{ url_for('main.analyses') }}">Past analyses</a></p>
   <h1>{{ analysis.address }}</h1>
 
   {% if analysis.market_value_method == 'comp_cached' %}
