@@ -75,9 +75,105 @@
       <li>Bed / Bath: {{ analysis.property_bedrooms or '—' }} / {{ analysis.property_bathrooms or '—' }}</li>
       <li>Year built: {{ analysis.property_year_built or '—' }}</li>
       <li>Zoning: {{ analysis.property_zoning or '—' }}
+        {%- if analysis.zoning_source and analysis.zoning_source != 'rentcast' %} <small class="muted">(city GIS)</small>
+        {%- endif %}
         <small class="muted">(informational only — verify local buildable rules independently)</small></li>
       <li>Subdivision: {{ analysis.property_subdivision or '—' }}</li>
     </ul>
+  </section>
+
+  <section>
+    <h3>Build restrictions</h3>
+    {% if analysis.zoning_detail %}
+      {% set zd = analysis.zoning_detail %}
+      {% if zd.zoning_description %}
+        <p class="zoning-headline">
+          <strong>{{ zd.zoning_code }}</strong> — {{ zd.zoning_description }}
+        </p>
+      {% endif %}
+      {% if zd.source == 'discovered' %}
+        <p class="muted zoning-provenance">
+          Found automatically from {{ zd.jurisdiction }}'s public GIS
+          {%- if zd.service_title %} (&ldquo;{{ zd.service_title }}&rdquo;{% if zd.service_owner %}, published by
+          {{ zd.service_owner }}{% endif %}){% endif %}.
+          {% if zd.provenance != 'official' %}
+            We couldn't automatically confirm this account belongs to the jurisdiction — it may well
+            be the city's, or a third party's copy that could be out of date. Worth confirming.
+          {% endif %}
+          Only the base zoning district is available this way — overlays, historic designations and
+          floodplain status aren't included, and any of them can independently block a teardown.
+          {% if zd.reference_url %}
+            <a href="{{ zd.reference_url }}" target="_blank" rel="noopener">View the zoning code</a>.
+          {% endif %}
+        </p>
+      {% endif %}
+      {% if restrictions %}
+        {% set critical = restrictions | selectattr('severity', 'equalto', 'critical') | list %}
+        {% if critical %}
+          <p class="restriction-warning">
+            <strong>This parcel carries designations that can prevent demolition.</strong>
+            Confirm with the city before assuming a teardown is permitted.
+          </p>
+        {% endif %}
+        <ul class="restriction-list">
+          {% for r in restrictions %}
+            <li class="restriction restriction-{{ r.severity }}">
+              <div class="restriction-head">
+                <span class="restriction-badge">{{ r.severity }}</span>
+                <span class="restriction-name">
+                  {% if r.url %}<a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.label }}</a>
+                  {% else %}{{ r.label }}{% endif %}
+                  {%- if r.detail %} <span class="muted">— {{ r.detail }}</span>{% endif %}
+                </span>
+              </div>
+              {% if r.guidance %}
+                <p class="restriction-means">{{ r.guidance.means }}</p>
+                <p class="restriction-governs"><strong>Controls:</strong> {{ r.guidance.governs }}</p>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% elif zd.source != 'discovered' %}
+        <p class="muted">No overlays or special designations found for this parcel.</p>
+      {% endif %}
+
+      <ul class="zoning-facts">
+        {% if zd.jurisdiction %}<li>Jurisdiction: {{ zd.jurisdiction }}</li>{% endif %}
+        {% if zd.source != 'discovered' %}
+          <li>Floodplain: {{ 'Intersects a mapped floodplain' if zd.in_floodplain else 'Not in a mapped floodplain' }}</li>
+        {% endif %}
+        {% if zd.case_manager and zd.case_manager.name %}
+          <li>City zoning case manager: {{ zd.case_manager.name }}
+            {%- if zd.case_manager.phone %} — {{ zd.case_manager.phone }}{% endif %}</li>
+        {% endif %}
+        {% if zd.ordinances %}
+          <li>Governing ordinances:
+            {% for o in zd.ordinances %}
+              {% if o.url %}<a href="{{ o.url }}" target="_blank" rel="noopener">{{ o.number }}</a>
+              {% else %}{{ o.number }}{% endif %}{{ '' if loop.last else ', ' }}
+            {% endfor %}
+          </li>
+        {% endif %}
+      </ul>
+      <p class="muted restriction-footnote">
+        Which rules apply comes from the city's public GIS. {{ zoning_note }}
+      </p>
+    {% else %}
+      <p class="muted">
+        No parcel-level build restrictions available for this address.
+        {% if analysis.property_zoning %}
+          The zoning code above ({{ analysis.property_zoning }}) came from RentCast, which reports the
+          base district only — not the overlays, historic designations, or floodplain status that
+          decide whether a teardown is permitted.
+        {% endif %}
+      </p>
+      <p class="muted">
+        Zoning is looked up automatically from whichever jurisdiction the address falls in, but not
+        every city publishes it in a machine-readable form — some only have it on paper or in a PDF
+        code book. Check the local planning or zoning department for this parcel's district,
+        overlays, and any historic designation before assuming a rebuild is permitted.
+      </p>
+    {% endif %}
   </section>
 
   <section>

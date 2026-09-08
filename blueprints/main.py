@@ -4,15 +4,18 @@ import os
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from integrations.municipal_zoning import SUPPORTED_JURISDICTIONS
 from integrations.rentcast import RentCastError
 from models import Analysis
 from services.analyzer import (
     AnalysisError,
+    build_municipal_zoning_lookup,
     build_rentcast_client,
     rentcast_mock_enabled,
     run_analysis,
 )
 from services.market_value import MarketValueUnavailableError
+from services.zoning_guidance import GENERIC_NOTE, annotate
 
 main_bp = Blueprint('main', __name__)
 logger = logging.getLogger(__name__)
@@ -103,6 +106,7 @@ def analyses():
             profit_margin_pct=profit_margin_pct,
             rentcast_client=client,
             force_refresh=force_refresh,
+            municipal_zoning_lookup=build_municipal_zoning_lookup(),
         )
     except ANALYSIS_FAILURE_ERRORS as exc:
         logger.warning('Analysis failed for %r: %s', address, exc)
@@ -116,4 +120,15 @@ def analyses():
 @login_required
 def analysis_detail(analysis_id):
     analysis = Analysis.query.filter_by(id=analysis_id, user_id=current_user.id).first_or_404()
-    return render_template('analysis_results.html', analysis=analysis)
+    # Turn the stored restriction labels into "what this does to a rebuild"
+    # guidance at render time rather than storing it — the explanations are
+    # editorial and should improve for past analyses too, not be frozen
+    # into whatever text shipped the day they were run.
+    restrictions = annotate((analysis.zoning_detail or {}).get('restrictions'))
+    return render_template(
+        'analysis_results.html',
+        analysis=analysis,
+        restrictions=restrictions,
+        zoning_note=GENERIC_NOTE,
+        supported_jurisdictions=SUPPORTED_JURISDICTIONS,
+    )
