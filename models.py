@@ -51,6 +51,22 @@ class PropertyLookupCache(db.Model):
     raw_property_json = db.Column(db.JSON, nullable=True)
     fetched_at = db.Column(db.DateTime, server_default=db.func.now())
 
+    # Supplementary zoning lookup (integrations/municipal_zoning.py),
+    # populated lazily only when raw_property_json's own zoning came back
+    # empty — RentCast frequently has no zoning for a given address. Cached
+    # here (same address key, same indefinite-retention reasoning as the
+    # RentCast fields above) so a jurisdiction's public GIS server is never
+    # queried twice for the same address. Both stay null for addresses
+    # where RentCast already had zoning, or where no jurisdiction adapter
+    # is registered for that address at all.
+    municipal_zoning_code = db.Column(db.String(50), nullable=True)
+    municipal_zoning_source = db.Column(db.String(30), nullable=True)  # e.g. 'austin_gis'
+    # Full MunicipalZoningResult.as_dict(): the parcel's overlays/
+    # designations, floodplain status, governing ordinances and case
+    # manager. Cached alongside the code so the jurisdiction's GIS is
+    # queried once per address rather than once per analysis.
+    municipal_zoning_detail = db.Column(db.JSON, nullable=True)
+
 
 class Analysis(db.Model):
     """
@@ -80,7 +96,19 @@ class Analysis(db.Model):
     property_bedrooms = db.Column(db.Integer, nullable=True)
     property_bathrooms = db.Column(db.Float, nullable=True)
     property_year_built = db.Column(db.Integer, nullable=True)
-    property_zoning = db.Column(db.String(30), nullable=True)
+    property_zoning = db.Column(db.String(50), nullable=True)
+    # Where property_zoning came from: 'rentcast' (the common case) or a
+    # municipal_zoning_code source, e.g. 'austin_gis', when RentCast had no
+    # zoning for this address and a jurisdiction adapter filled it in (see
+    # integrations/municipal_zoning.py). Null alongside a null
+    # property_zoning when neither had an answer.
+    zoning_source = db.Column(db.String(30), nullable=True)
+    # Parcel-specific build restrictions from the jurisdiction's GIS (see
+    # integrations/municipal_zoning.py): overlays and historic
+    # designations that can constrain — or outright block — a teardown and
+    # rebuild. Informational like zoning itself: surfaced to the user,
+    # never fed into the deal math.
+    zoning_detail = db.Column(db.JSON, nullable=True)
     property_subdivision = db.Column(db.String(255), nullable=True)
     # RentCast Property Records' raw `history` field: a dict keyed by ISO
     # date string, each value {event, date, price}. Informational only,
