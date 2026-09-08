@@ -67,6 +67,7 @@ def make_logged_in_analysis(
     property_latitude=None,
     property_longitude=None,
     market_value_comps_snapshot=None,
+    zoning_detail=None,
     market_value_method='rentcast_avm',
 ):
     client.post('/register', data={
@@ -86,6 +87,7 @@ def make_logged_in_analysis(
         market_value_confidence='high',
         market_value_comps_count=3,
         market_value_comps_snapshot=market_value_comps_snapshot,
+        zoning_detail=zoning_detail,
         build_cost_estimate=200_000,
         total_cost_estimate=400_000,
         required_sale_price=480_000,
@@ -269,3 +271,47 @@ class TestAnalysisResultsCompCachedBanner:
         assert response.status_code == 200
         assert 'Limited data' not in html
         assert 'Refresh with full data' not in html
+
+
+HOSTILE_ZONING_DETAIL = {
+    'zoning_code': 'R-1', 'source': 'discovered', 'jurisdiction': 'X, TX',
+    'in_floodplain': False, 'provenance': 'unverified',
+    'zoning_description': '', 'service_title': 's', 'service_owner': 'o',
+    'reference_url': 'javascript:alert(3)',
+    'case_manager': {},
+    'restrictions': [
+        {'label': 'Local Historic Districts', 'detail': 'd',
+         'severity': 'critical', 'url': 'javascript:alert(1)'},
+        {'label': 'Airport Overlay', 'detail': '', 'severity': 'high',
+         'url': 'https://example.gov/ok'},
+    ],
+    'ordinances': [
+        {'number': '123', 'url': 'data:text/html,<script>alert(1)</script>'},
+        {'number': '456', 'url': 'https://example.gov/ord'},
+    ],
+}
+
+
+class TestZoningLinkSchemes:
+    """Zoning detail is cached indefinitely, so a row stored before the
+    ingestion filter existed can still hold a hostile URL. These cover the
+    render-time guard on already-stored data."""
+
+    def test_dangerous_schemes_are_never_rendered_as_links(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=HOSTILE_ZONING_DETAIL)
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        assert 'href="javascript:' not in html.lower()
+        assert 'href="data:' not in html.lower()
+
+    def test_legitimate_links_and_all_text_still_render(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=HOSTILE_ZONING_DETAIL)
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        # Dropping the scheme must not drop the information itself.
+        assert 'https://example.gov/ok' in html
+        assert 'https://example.gov/ord' in html
+        assert 'Local Historic Districts' in html
+        assert '123' in html

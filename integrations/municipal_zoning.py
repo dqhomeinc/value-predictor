@@ -290,7 +290,10 @@ def _absorb_match(result, match, seen_layers):
     if layer == 'Zoning Ordinance':
         number = _clean(attrs.get('Ordinance Number'))
         if number and not any(o['number'] == number for o in result.ordinances):
-            result.ordinances.append({'number': number, 'url': _clean(attrs.get('Ordinance hyperlink'))})
+            result.ordinances.append({
+                'number': number,
+                'url': safe_external_url(attrs.get('Ordinance hyperlink')),
+            })
         return
 
     if layer == 'Zoning Case Managers':
@@ -325,7 +328,7 @@ def _absorb_match(result, match, seen_layers):
         label=layer,
         detail=_first_detail(attrs),
         severity=severity,
-        url=_clean(attrs.get('Ordinance hyperlink')) or _clean(attrs.get('Hyperlink URL')),
+        url=safe_external_url(attrs.get('Ordinance hyperlink')) or safe_external_url(attrs.get('Hyperlink URL')),
     ))
 
 
@@ -342,6 +345,29 @@ def _first_detail(attrs):
         if value:
             return value
     return ''
+
+
+def safe_external_url(value):
+    """
+    The value if it is an http(s) URL, otherwise ''.
+
+    Every URL here comes from a third party's GIS attributes, and under
+    discovery the publishing account can be anyone. Jinja's autoescaping
+    does not neutralise a `javascript:` or `data:` URI inside an href —
+    it escapes the quoting, not the scheme — so an attribute like
+    "Hyperlink URL": "javascript:..." renders as a live link on the
+    signed-in user's own analysis page. Restricting to http(s) is what
+    stops that; callers render plain text when this returns ''.
+
+    Applied both when ingesting GIS attributes and again at render time.
+    The second pass isn't redundant: zoning detail is cached indefinitely
+    by design, so rows written before this existed would otherwise keep
+    serving whatever they stored.
+    """
+    if not isinstance(value, str):
+        return ''
+    candidate = value.strip()
+    return candidate if candidate.lower().startswith(('http://', 'https://')) else ''
 
 
 def _clean(value):

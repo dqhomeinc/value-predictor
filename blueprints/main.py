@@ -4,6 +4,7 @@ import os
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from integrations.municipal_zoning import SUPPORTED_JURISDICTIONS, safe_external_url
 from integrations.rentcast import RentCastError
 from models import Analysis
 from services.analyzer import (
@@ -14,8 +15,21 @@ from services.analyzer import (
     run_analysis,
 )
 from services.market_value import MarketValueUnavailableError
+from services.zoning_guidance import GENERIC_NOTE, annotate
 
 main_bp = Blueprint('main', __name__)
+
+
+@main_bp.app_template_filter('safe_url')
+def _safe_url(value):
+    """
+    Render-time scheme check for links that came from third-party GIS
+    attributes. Ingestion already filters these, but zoning detail is
+    cached indefinitely, so rows stored before that existed would
+    otherwise keep serving whatever they captured. See
+    integrations.municipal_zoning.safe_external_url.
+    """
+    return safe_external_url(value)
 logger = logging.getLogger(__name__)
 
 # Failures outside our control (RentCast down/no data for this address,
@@ -118,4 +132,15 @@ def analyses():
 @login_required
 def analysis_detail(analysis_id):
     analysis = Analysis.query.filter_by(id=analysis_id, user_id=current_user.id).first_or_404()
-    return render_template('analysis_results.html', analysis=analysis)
+    # Turn the stored restriction labels into "what this does to a rebuild"
+    # guidance at render time rather than storing it — the explanations are
+    # editorial and should improve for past analyses too, not be frozen
+    # into whatever text shipped the day they were run.
+    restrictions = annotate((analysis.zoning_detail or {}).get('restrictions'))
+    return render_template(
+        'analysis_results.html',
+        analysis=analysis,
+        restrictions=restrictions,
+        zoning_note=GENERIC_NOTE,
+        supported_jurisdictions=SUPPORTED_JURISDICTIONS,
+    )
