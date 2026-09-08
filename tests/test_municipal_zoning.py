@@ -4,6 +4,7 @@ import requests
 from integrations.municipal_zoning import (
     MunicipalZoningUnavailableError,
     lookup_municipal_zoning,
+    safe_external_url,
 )
 
 GEOCODE_SUCCESS = {
@@ -251,3 +252,50 @@ class TestAustinFailureModes:
         assert result.zoning_code == 'SF-3-HD-NCCD-NP'
         assert 'Neighborhood Conservation Combining District' in {r.label for r in result.restrictions}
         assert 'Local Historic Districts' not in {r.label for r in result.restrictions}
+
+
+class TestSafeExternalUrl:
+    @pytest.mark.parametrize('value', [
+        'https://example.gov/ordinance/123',
+        'http://www.austintexas.gov/edims/document.cfm?id=59585',
+        '  https://example.gov/padded  ',
+    ])
+    def test_keeps_http_and_https(self, value):
+        assert safe_external_url(value) == value.strip()
+
+    @pytest.mark.parametrize('value', [
+        'javascript:alert(document.cookie)',
+        'JaVaScRiPt:alert(1)',
+        'data:text/html,<script>alert(1)</script>',
+        'vbscript:msgbox(1)',
+        'file:///etc/passwd',
+        '//evil.example/path',
+        'ordinance 20101216-093',
+        '', None, 42,
+    ])
+    def test_drops_everything_else(self, value):
+        # These reach us as GIS feature attributes. Under discovery the
+        # publishing account can be anyone, and Jinja's autoescaping does
+        # not neutralise a scheme inside an href — it escapes the quoting.
+        assert safe_external_url(value) == ''
+
+    def test_hostile_hyperlink_attribute_never_becomes_a_restriction_url(self):
+        session = austin_session(Zoning_2=identify(
+            match('Waterfront Overlay', **{'Hyperlink URL': 'javascript:alert(1)'}),
+        ))
+
+        result = lookup_municipal_zoning('4100 Avenue G, Austin, TX', session=session)
+
+        overlay = next(r for r in result.restrictions if r.label == 'Waterfront Overlay')
+        assert overlay.url == ''
+
+    def test_hostile_ordinance_hyperlink_is_dropped_but_the_number_is_kept(self):
+        session = austin_session(Zoning_1=identify(
+            match('Zoning', Zoning='SF-3'),
+            match('Zoning Ordinance', **{'Ordinance Number': '20101216-093',
+                                         'Ordinance hyperlink': 'javascript:alert(1)'}),
+        ))
+
+        result = lookup_municipal_zoning('4100 Avenue G, Austin, TX', session=session)
+
+        assert result.ordinances == [{'number': '20101216-093', 'url': ''}]
