@@ -22,12 +22,13 @@ contract, actively block automated access, and would fail silently with
 wrong numbers rather than loudly with no data. For a tool people make
 financial decisions from, "no data" beats "quietly wrong data".
 
-Coverage is an explicit per-jurisdiction registry, not a crawler: every
-jurisdiction publishes differently, so each one needs its layers
-identified and verified by hand. Today that registry holds Austin, TX,
-verified end-to-end against the live services below. To add another,
-write a `_lookup_<city>_zoning(address, session)` returning a
-MunicipalZoningResult and register it in _detect_jurisdiction.
+Not a general-purpose "any US address" solution — no such thing exists,
+free or paid (even nationwide commercial zoning APIs cap out at major
+metros). Every jurisdiction publishes differently, so this is an explicit
+per-jurisdiction registry, not a crawler. Today: Austin, TX, verified
+end-to-end against the live services below. To add a jurisdiction, write a
+`_lookup_<city>_zoning(address, session)` returning a MunicipalZoningResult
+and register it in _detect_jurisdiction.
 """
 
 import logging
@@ -116,12 +117,22 @@ class ZoningRestriction:
 @dataclass
 class MunicipalZoningResult:
     zoning_code: str
-    source: str  # e.g. 'austin_gis'
+    source: str  # e.g. 'austin_gis', 'discovered'
     restrictions: list = field(default_factory=list)  # of ZoningRestriction
     jurisdiction: str = ''
     in_floodplain: bool = False
     ordinances: list = field(default_factory=list)  # of {'number', 'url'}
     case_manager: dict = field(default_factory=dict)  # {'name', 'phone'}
+    # Set by discovery (integrations/zoning_discovery.py): the district's
+    # human-readable name, and where the answer came from. Provenance
+    # matters because a discovered service may be published by the city
+    # itself or by a third party whose copy could be stale — the page says
+    # which, rather than presenting both as equally authoritative.
+    zoning_description: str = ''
+    provenance: str = ''  # '' | 'official' | 'unverified'
+    service_title: str = ''
+    service_owner: str = ''
+    reference_url: str = ''
 
     def as_dict(self):
         """Plain JSON-safe dict, for the JSON columns on
@@ -133,6 +144,11 @@ class MunicipalZoningResult:
             'in_floodplain': self.in_floodplain,
             'ordinances': self.ordinances,
             'case_manager': self.case_manager,
+            'zoning_description': self.zoning_description,
+            'provenance': self.provenance,
+            'service_title': self.service_title,
+            'service_owner': self.service_owner,
+            'reference_url': self.reference_url,
             'restrictions': [
                 {'label': r.label, 'detail': r.detail, 'severity': r.severity, 'url': r.url}
                 for r in self.restrictions
@@ -144,14 +160,51 @@ def lookup_municipal_zoning(address, session=None):
     """
     Address in, MunicipalZoningResult out.
 
-    Dispatched by jurisdiction. Raises MunicipalZoningUnavailableError for
-    every "no answer" case — callers should catch that one exception and
-    carry on.
+    Curated adapters first, nationwide discovery second. A curated adapter
+    is worth preferring where one exists: it knows which of a city's many
+    layers carry overlays, historic designations and floodplain, so it
+    returns the restrictions that decide a teardown. Discovery
+    (integrations/zoning_discovery.py) generalizes to the rest of the
+    country but only reliably recovers the base zoning district.
+
+    Raises MunicipalZoningUnavailableError for every "no answer" case —
+    callers should catch that one exception and carry on.
     """
+    session = session or requests.Session()
+
     lookup = _detect_jurisdiction(address)
-    if lookup is None:
-        raise MunicipalZoningUnavailableError(f'No municipal zoning source registered for {address!r}')
-    return lookup(address, session or requests.Session())
+    if lookup is not None:
+        return lookup(address, session)
+
+    return _lookup_via_discovery(address, session)
+
+
+def _lookup_via_discovery(address, session):
+    # Imported here rather than at module scope so the curated path doesn't
+    # depend on the discovery machinery (and tests of one don't drag in the
+    # other).
+    from integrations.zoning_discovery import ZoningDiscoveryError, discover_zoning
+
+    try:
+        found = discover_zoning(address, session=session)
+    except ZoningDiscoveryError as exc:
+        raise MunicipalZoningUnavailableError(str(exc)) from exc
+
+    return MunicipalZoningResult(
+        zoning_code=found.zoning_code,
+        source='discovered',
+        jurisdiction=found.jurisdiction,
+        zoning_description=found.zoning_description,
+        provenance=found.provenance,
+        service_title=found.service_title,
+        service_owner=found.service_owner,
+        reference_url=found.reference_url,
+    )
+
+
+# Human-readable coverage, for telling a user why an address returned
+# nothing. Keep in step with _detect_jurisdiction below.
+SUPPORTED_JURISDICTIONS = ('Austin, TX',)
 
 
 def has_jurisdiction_adapter(address):
