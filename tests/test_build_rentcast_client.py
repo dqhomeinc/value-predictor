@@ -59,6 +59,22 @@ class TestBuildRentcastClient:
         with pytest.raises(RuntimeError):
             build_rentcast_client('real-key')
 
+    def test_municipal_zoning_lookup_is_mocked_alongside_rentcast(self):
+        # Local dev (no DATABASE_URL): the city GIS lookup must be
+        # synthetic too, or every Austin address would hit a live
+        # government server during routine local testing.
+        from integrations.municipal_zoning_mock import mock_lookup_municipal_zoning
+        from services.analyzer import build_municipal_zoning_lookup
+
+        assert build_municipal_zoning_lookup() is mock_lookup_municipal_zoning
+
+    def test_municipal_zoning_lookup_is_real_when_mock_is_off(self, monkeypatch):
+        monkeypatch.setenv('RENTCAST_MOCK', '0')
+        from integrations.municipal_zoning import lookup_municipal_zoning
+        from services.analyzer import build_municipal_zoning_lookup
+
+        assert build_municipal_zoning_lookup() is lookup_municipal_zoning
+
     def test_a_value_other_than_1_does_not_force_mock_on(self, monkeypatch):
         # Explicit-but-not-'1' is treated the same as '0': an opt-out, not
         # a typo that silently falls through to the mock default.
