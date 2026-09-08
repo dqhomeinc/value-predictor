@@ -8,6 +8,7 @@ from integrations.rentcast import RentCastError
 from models import Analysis
 from services.analyzer import (
     AnalysisError,
+    build_municipal_zoning_lookup,
     build_rentcast_client,
     rentcast_mock_enabled,
     run_analysis,
@@ -103,6 +104,7 @@ def analyses():
             profit_margin_pct=profit_margin_pct,
             rentcast_client=client,
             force_refresh=force_refresh,
+            municipal_zoning_lookup=build_municipal_zoning_lookup(),
         )
     except ANALYSIS_FAILURE_ERRORS as exc:
         logger.warning('Analysis failed for %r: %s', address, exc)

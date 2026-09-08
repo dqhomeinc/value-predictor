@@ -1,5 +1,10 @@
 import pytest
 
+from integrations.municipal_zoning import (
+    MunicipalZoningResult,
+    MunicipalZoningUnavailableError,
+    ZoningRestriction,
+)
 from integrations.rentcast import RentCastClient, RentCastNotFoundError
 from models import Analysis, PropertyLookupCache, User, db
 from services.analyzer import AnalysisError, run_analysis
@@ -58,6 +63,24 @@ def make_client(responses):
     return RentCastClient(api_key='test-key', session=FakeSession(responses))
 
 
+def no_match_zoning_lookup(address):
+    raise MunicipalZoningUnavailableError('no jurisdiction adapter for this test address')
+
+
+class CountingZoningLookup:
+    """Stands in for integrations.municipal_zoning.lookup_municipal_zoning
+    in tests that care how many times it's actually invoked (e.g. to prove
+    a cached result is reused rather than re-queried)."""
+
+    def __init__(self, result):
+        self.result = result
+        self.calls = 0
+
+    def __call__(self, address):
+        self.calls += 1
+        return self.result
+
+
 @pytest.fixture
 def user(app):
     u = User(username='flipper', email='flipper@example.com')
@@ -81,6 +104,9 @@ class TestRunAnalysis:
             cost_per_sqft=100,
             profit_margin_pct=20,
             rentcast_client=client,
+            # No jurisdiction adapter for this test address, so RentCast's
+            # own zoning stands — the common case for most US addresses.
+            municipal_zoning_lookup=no_match_zoning_lookup,
         )
 
         # Persisted and retrievable.
@@ -96,6 +122,7 @@ class TestRunAnalysis:
 
         # Zoning/subdivision from Property Records.
         assert analysis.property_zoning == 'R-1'
+        assert analysis.zoning_source == 'rentcast'
         assert analysis.property_subdivision == 'Grand Lake Estates'
 
         # Sale history from Property Records, stored raw; sorted view is
@@ -238,6 +265,12 @@ class TestRunAnalysisWithCompCachedData:
             cost_per_sqft=100,
             profit_margin_pct=20,
             rentcast_client=client,
+            # This test isn't about the municipal-zoning fallback (that's
+            # TestRunAnalysisMunicipalZoningFallback below) — stub it out
+            # so the real Austin GIS lookup this address would otherwise
+            # trigger (comp_seed data has no zoning) can't turn this into
+            # a real, non-deterministic network call.
+            municipal_zoning_lookup=no_match_zoning_lookup,
         )
 
         assert client.session.calls == []
@@ -247,8 +280,10 @@ class TestRunAnalysisWithCompCachedData:
         assert analysis.market_value_comps_count == 0
         # Property characteristics still came through from the seeded data.
         assert analysis.property_sqft == 1800
-        # But zoning/subdivision/history genuinely weren't fetched.
+        # But zoning/subdivision/history genuinely weren't fetched, and no
+        # municipal source had a match either (stubbed above).
         assert analysis.property_zoning is None
+        assert analysis.zoning_source is None
         assert analysis.property_sale_history is None
 
     def test_comp_cached_with_no_price_raises_market_value_unavailable(self, app, user):
@@ -309,3 +344,130 @@ class TestRunAnalysisWithCompCachedData:
 
         row = PropertyLookupCache.query.filter_by(normalized_address='123 MAIN ST, AUSTIN, TX').first()
         assert row.source == 'full_lookup'
+
+
+NO_ZONING_PROPERTY_RECORD_RESPONSE = [{**PROPERTY_RECORD_RESPONSE[0], 'zoning': None}]
+
+
+class TestRunAnalysisMunicipalZoningFallback:
+    def test_falls_back_to_municipal_lookup_when_rentcast_has_no_zoning(self, app, user):
+        client = make_client([
+            FakeResponse(200, VALUE_ESTIMATE_RESPONSE),
+            FakeResponse(200, NO_ZONING_PROPERTY_RECORD_RESPONSE),
+        ])
+        lookup = CountingZoningLookup(MunicipalZoningResult(zoning_code='I-RR', source='austin_gis'))
+
+        analysis = run_analysis(
+            user=user,
+            address='123 Main St, Austin, TX',
+            purchase_price=200_000,
+            cost_per_sqft=100,
+            profit_margin_pct=20,
+            rentcast_client=client,
+            municipal_zoning_lookup=lookup,
+        )
+
+        assert analysis.property_zoning == 'I-RR'
+        assert analysis.zoning_source == 'austin_gis'
+        assert lookup.calls == 1
+
+    def test_stays_none_when_no_jurisdiction_matches(self, app, user):
+        client = make_client([
+            FakeResponse(200, VALUE_ESTIMATE_RESPONSE),
+            FakeResponse(200, NO_ZONING_PROPERTY_RECORD_RESPONSE),
+        ])
+
+        analysis = run_analysis(
+            user=user,
+            address='123 Main St, Austin, TX',
+            purchase_price=200_000,
+            cost_per_sqft=100,
+            profit_margin_pct=20,
+            rentcast_client=client,
+            municipal_zoning_lookup=no_match_zoning_lookup,
+        )
+
+        # A missing municipal answer degrades gracefully — same as RentCast
+        # having no zoning today — never fails the whole analysis over an
+        # informational-only field.
+        assert analysis.property_zoning is None
+        assert analysis.zoning_source is None
+        assert Analysis.query.count() == 1
+
+    def test_municipal_zoning_wins_over_rentcast_when_a_jurisdiction_matches(self, app, user):
+        # RentCast's bare base code is the weaker answer: the city GIS
+        # gives the full code plus the overlays and historic designations
+        # that decide whether a teardown is even permitted. So the lookup
+        # runs even though RentCast did return a zoning value.
+        client = make_client([
+            FakeResponse(200, VALUE_ESTIMATE_RESPONSE),
+            FakeResponse(200, PROPERTY_RECORD_RESPONSE),  # has zoning: 'R-1'
+        ])
+        lookup = CountingZoningLookup(MunicipalZoningResult(
+            zoning_code='SF-3-HD-NCCD-NP',
+            source='austin_gis',
+            restrictions=[ZoningRestriction(label='Local Historic Districts', severity='critical')],
+        ))
+
+        analysis = run_analysis(
+            user=user,
+            address='123 Main St, Austin, TX',
+            purchase_price=200_000,
+            cost_per_sqft=100,
+            profit_margin_pct=20,
+            rentcast_client=client,
+            municipal_zoning_lookup=lookup,
+        )
+
+        assert lookup.calls == 1
+        assert analysis.property_zoning == 'SF-3-HD-NCCD-NP'  # not 'R-1'
+        assert analysis.zoning_source == 'austin_gis'
+        assert analysis.zoning_detail['restrictions'][0]['label'] == 'Local Historic Districts'
+        assert analysis.zoning_detail['restrictions'][0]['severity'] == 'critical'
+
+    def test_falls_back_to_rentcast_zoning_when_no_jurisdiction_matches(self, app, user):
+        client = make_client([
+            FakeResponse(200, VALUE_ESTIMATE_RESPONSE),
+            FakeResponse(200, PROPERTY_RECORD_RESPONSE),  # has zoning: 'R-1'
+        ])
+
+        analysis = run_analysis(
+            user=user,
+            address='123 Main St, Austin, TX',
+            purchase_price=200_000,
+            cost_per_sqft=100,
+            profit_margin_pct=20,
+            rentcast_client=client,
+            municipal_zoning_lookup=no_match_zoning_lookup,
+        )
+
+        assert analysis.property_zoning == 'R-1'
+        assert analysis.zoning_source == 'rentcast'
+        assert analysis.zoning_detail is None
+
+    def test_municipal_result_is_cached_and_not_looked_up_twice(self, app, user):
+        # 4 responses queued, but only the first analysis should consume
+        # any — the second reuses the cached RentCast *and* municipal data.
+        client = make_client([
+            FakeResponse(200, VALUE_ESTIMATE_RESPONSE),
+            FakeResponse(200, NO_ZONING_PROPERTY_RECORD_RESPONSE),
+        ])
+        lookup = CountingZoningLookup(MunicipalZoningResult(zoning_code='I-RR', source='austin_gis'))
+
+        run_analysis(
+            user=user, address='123 Main St, Austin, TX', purchase_price=200_000,
+            cost_per_sqft=100, profit_margin_pct=20, rentcast_client=client, municipal_zoning_lookup=lookup,
+        )
+        second = run_analysis(
+            user=user, address='123 Main St, Austin, TX', purchase_price=250_000,
+            cost_per_sqft=120, profit_margin_pct=15, rentcast_client=client, municipal_zoning_lookup=lookup,
+        )
+
+        assert lookup.calls == 1  # not 2
+        assert second.property_zoning == 'I-RR'
+        assert second.zoning_source == 'austin_gis'
+
+        row = PropertyLookupCache.query.filter_by(normalized_address='123 MAIN ST, AUSTIN, TX').first()
+        assert row.municipal_zoning_code == 'I-RR'
+        assert row.municipal_zoning_source == 'austin_gis'
+        assert row.municipal_zoning_detail['zoning_code'] == 'I-RR'
