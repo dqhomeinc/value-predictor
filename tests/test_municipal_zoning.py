@@ -115,26 +115,32 @@ class TestJurisdictionDetection:
         '9 Austin Hwy, San Antonio, TX',
         '1 Austin Business Park, Round Rock, TX',
     ])
-    def test_austin_as_a_street_name_is_not_treated_as_the_city(self, address):
-        # These are elsewhere in Texas. Routing them to Austin's geocoder
+    def test_austin_as_a_street_name_is_not_claimed_by_the_austin_adapter(self, address):
+        # These are elsewhere in Texas. Handing them to Austin's geocoder
         # would fuzzy-match a similarly named Austin street and return
-        # another parcel's rules as if they were this one's — the quiet
-        # wrong answer this module exists to avoid. Failing to claim the
-        # address is the safe outcome.
+        # another parcel's rules as if they were this one's. They fall
+        # through to discovery instead, which resolves the real
+        # jurisdiction from the address rather than assuming it.
         session = austin_session()
 
         with pytest.raises(MunicipalZoningUnavailableError):
             lookup_municipal_zoning(address, session=session)
 
-        assert session.calls == []
+        assert not any('austintexas.gov' in url for url in session.calls), \
+            'a non-Austin address must never reach the Austin adapter'
 
-    def test_unregistered_jurisdiction_raises_without_any_network_call(self):
+    def test_address_without_a_curated_adapter_falls_through_to_discovery(self):
+        # No curated adapter for Springfield, so the nationwide discovery
+        # path takes over (integrations/zoning_discovery.py). This session
+        # routes nothing for the Census geocoder, so discovery finds
+        # nothing and the caller still sees the same "no answer" exception.
         session = austin_session()
 
         with pytest.raises(MunicipalZoningUnavailableError):
             lookup_municipal_zoning('123 Main St, Springfield, IL', session=session)
 
-        assert session.calls == []
+        assert any('geocoding.geo.census.gov' in url for url in session.calls), \
+            'expected discovery to attempt a Census geocode'
 
 
 class TestAustinRestrictions:

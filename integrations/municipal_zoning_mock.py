@@ -30,6 +30,7 @@ from integrations.municipal_zoning import (
     has_jurisdiction_adapter,
 )
 from integrations.rentcast import normalize_address
+from integrations.zoning_discovery import OFFICIAL, UNVERIFIED
 
 MOCK_ZONING_CODES = ['SF-2', 'SF-3', 'SF-3-NP', 'SF-3-HD-NCCD-NP', 'MF-2', 'MF-3-CO-NP']
 
@@ -45,6 +46,13 @@ MOCK_HIGH = [
     ('Waterfront Overlay', ''),
     ('Capitol View Corridors', ''),
 ]
+MOCK_DESCRIPTIONS = [
+    'SINGLE-UNIT RESIDENTIAL LOW DENSITY',
+    'MULTI-UNIT RESIDENTIAL MODERATE DENSITY',
+    'NEIGHBORHOOD COMMERCIAL MIXED USE',
+    'URBAN RESIDENTIAL',
+]
+
 MOCK_CASE_MANAGERS = [
     ('Dana Placeholder', '(512)555-0143'),
     ('Sam Mockingbird', '(512)555-0198'),
@@ -61,7 +69,25 @@ def mock_lookup_municipal_zoning(address, session=None):
     rng = random.Random(normalize_address(address))
 
     if not has_jurisdiction_adapter(address):
-        raise MunicipalZoningUnavailableError(f'No municipal zoning source registered for {address!r}')
+        # Everywhere without a curated adapter goes through nationwide
+        # discovery, which finds a base zoning district for much of the
+        # country but not all of it. Mirror both outcomes, including the
+        # misses — a mock where every address resolves would hide how the
+        # page looks for the ~1 in 4 that genuinely don't.
+        if rng.random() < 0.25:
+            raise MunicipalZoningUnavailableError(
+                f'No zoning service discovered for {address!r}'
+            )
+        code = rng.choice(MOCK_ZONING_CODES)
+        return MunicipalZoningResult(
+            zoning_code=code,
+            source='discovered',
+            jurisdiction='Mockville, TX',
+            zoning_description=rng.choice(MOCK_DESCRIPTIONS),
+            provenance=OFFICIAL if rng.random() < 0.4 else UNVERIFIED,
+            service_title='Mockville Zoning Districts',
+            service_owner='mockville.gis' if rng.random() < 0.4 else 'someconsultant_corp',
+        )
 
     restrictions = []
     # Roughly a third of parcels carry a demolition-blocking designation,
