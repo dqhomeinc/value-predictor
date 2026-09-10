@@ -44,6 +44,17 @@ def create_app():
     db_url = db_url.split('?', 1)[0]
     app.config['SQLALCHEMY_DATABASE_URI'] = db_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    if db_url.startswith('postgresql+pg8000://'):
+        # Neon suspends its compute after a few idle minutes and closes every
+        # connection, including the ones SQLAlchemy is holding in its pool.
+        # Without a check, the next request is handed one of those dead
+        # connections and its first query fails with pg8000's "network
+        # error". In production that surfaced as a 500 on the first request
+        # after 7 idle minutes, raised from Flask-Login's user loader before
+        # the view even ran. pool_pre_ping tests each connection as it
+        # leaves the pool and transparently replaces a dead one.
+        # Postgres only: the local SQLite file has no server to drop it.
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'pool_pre_ping': True}
 
     db.init_app(app)
     login_manager.init_app(app)
