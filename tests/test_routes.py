@@ -1,10 +1,12 @@
 import os
 import re
+from types import SimpleNamespace
 
+import anthropic
 import pytest
 
 from app import create_app
-from models import Analysis, User, db
+from models import Analysis, ChatMessage, User, db
 
 
 @pytest.fixture(scope='module')
@@ -475,3 +477,160 @@ class TestWhatYouCanBuild:
         html = client.get(f'/analyses/{analysis.id}').data.decode()
 
         assert 'href="javascript:' not in html
+
+
+class FakeAPIError(anthropic.APIError):
+    """An API failure without the HTTP request the SDK's own constructors need."""
+
+    def __init__(self):
+        self.message = 'Claude is unavailable'
+        Exception.__init__(self, self.message)
+
+
+class FakeChatClient:
+    """Stands in for anthropic.Anthropic: answers every question the same way."""
+
+    def __init__(self, text='Thirty feet from the front lot line.', sources=(), error=None):
+        self.text, self.sources, self.error = text, sources, error
+        self.calls = []
+        self.messages = self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error:
+            raise self.error
+        citations = [SimpleNamespace(type='web_search_result_location', url=url, title=title)
+                     for title, url in self.sources]
+        return SimpleNamespace(content=[SimpleNamespace(type='text', text=self.text, citations=citations)],
+                               stop_reason='end_turn',
+                               usage=SimpleNamespace(server_tool_use=SimpleNamespace(web_search_requests=1)))
+
+
+@pytest.fixture
+def chat_client(monkeypatch):
+    fake = FakeChatClient(sources=[('Zoning Bylaw', 'https://lexingtonma.gov/bylaw')])
+    monkeypatch.setattr('blueprints.main.build_chat_client', lambda: fake)
+    return fake
+
+
+class TestZoningChat:
+    def _ask(self, client, analysis, message):
+        return client.post(f'/analyses/{analysis.id}/chat', json={'message': message})
+
+    def test_answers_and_saves_the_exchange(self, client, chat_client):
+        analysis = make_logged_in_analysis(client, zoning_detail=LEXINGTON_DISCOVERED)
+
+        response = self._ask(client, analysis, 'How far back from the street?')
+
+        assert response.status_code == 200
+        assert response.get_json() == {
+            'reply': 'Thirty feet from the front lot line.',
+            'sources': [{'title': 'Zoning Bylaw', 'url': 'https://lexingtonma.gov/bylaw'}],
+        }
+        saved = ChatMessage.query.filter_by(analysis_id=analysis.id).order_by(ChatMessage.id).all()
+        assert [(m.role, m.content) for m in saved] == [
+            ('user', 'How far back from the street?'),
+            ('assistant', 'Thirty feet from the front lot line.'),
+        ]
+        assert saved[1].web_searches == 1
+        # The property's own data went to Claude.
+        assert '- Front setback: 30 ft' in chat_client.calls[0]['system']
+
+    def test_earlier_turns_are_sent_as_history(self, client, chat_client):
+        analysis = make_logged_in_analysis(client)
+        self._ask(client, analysis, 'First question')
+
+        self._ask(client, analysis, 'Second question')
+
+        assert [m['content'] for m in chat_client.calls[1]['messages']] == [
+            'First question', 'Thirty feet from the front lot line.', 'Second question']
+
+    def test_saved_conversation_shows_on_the_page(self, client, chat_client):
+        analysis = make_logged_in_analysis(client)
+        self._ask(client, analysis, 'Can I build a garage?')
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        assert 'Ask about build restrictions' in html
+        assert 'Can I build a garage?' in html
+        assert 'href="https://lexingtonma.gov/bylaw"' in html
+        assert 'zoning-chat.js' in html
+
+    def test_saved_source_with_a_hostile_url_is_not_linked(self, client):
+        analysis = make_logged_in_analysis(client)
+        db.session.add_all([
+            ChatMessage(analysis_id=analysis.id, role='user', content='q'),
+            ChatMessage(analysis_id=analysis.id, role='assistant', content='a',
+                        sources=[{'title': 'Bad', 'url': 'javascript:alert(1)'}]),
+        ])
+        db.session.commit()
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        assert 'href="javascript:' not in html
+
+    @pytest.mark.parametrize('payload', [{'message': ''}, {'message': '   '}, {}, ['not', 'an', 'object']])
+    def test_empty_question_is_rejected(self, client, chat_client, payload):
+        analysis = make_logged_in_analysis(client)
+
+        response = client.post(f'/analyses/{analysis.id}/chat', json=payload)
+
+        assert response.status_code == 400
+        assert chat_client.calls == []
+
+    def test_overlong_question_is_rejected(self, client, chat_client):
+        analysis = make_logged_in_analysis(client)
+
+        assert self._ask(client, analysis, 'x' * 1001).status_code == 400
+        assert chat_client.calls == []
+
+    def test_another_users_analysis_is_not_found(self, client, chat_client):
+        make_logged_in_analysis(client)
+        other = User(username='other', email='other@example.com', password_hash='x')
+        db.session.add(other)
+        db.session.commit()
+        theirs = Analysis(user_id=other.id, address='9 Elm St', purchase_price=1, initial_cost_per_sqft=1,
+                          initial_profit_margin_pct=1)
+        db.session.add(theirs)
+        db.session.commit()
+
+        assert self._ask(client, theirs, 'Hello?').status_code == 404
+        assert chat_client.calls == []
+
+    def test_requires_login(self, client, chat_client):
+        response = client.post('/analyses/1/chat', json={'message': 'Hello?'})
+
+        assert response.status_code in (302, 401)
+        assert chat_client.calls == []
+
+    def test_daily_limit(self, client, chat_client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.daily_message_limit', lambda: 1)
+        analysis = make_logged_in_analysis(client)
+        assert self._ask(client, analysis, 'First').status_code == 200
+
+        response = self._ask(client, analysis, 'Second')
+
+        assert response.status_code == 429
+        assert 'limit of 1 questions a day' in response.get_json()['error']
+        assert len(chat_client.calls) == 1
+
+    def test_failure_saves_nothing(self, client, monkeypatch):
+        failing = FakeChatClient(error=FakeAPIError())
+        monkeypatch.setattr('blueprints.main.build_chat_client', lambda: failing)
+        analysis = make_logged_in_analysis(client)
+
+        response = self._ask(client, analysis, 'Hello?')
+
+        assert response.status_code == 502
+        assert 'error' in response.get_json()
+        assert ChatMessage.query.count() == 0
+
+    def test_not_set_up(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.build_chat_client', lambda: None)
+        monkeypatch.setattr('blueprints.main.chat_configured', lambda: False)
+        analysis = make_logged_in_analysis(client)
+
+        assert self._ask(client, analysis, 'Hello?').status_code == 503
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+        assert "The chat isn't set up on this server yet." in html
+        assert 'id="chat-form"' not in html

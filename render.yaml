@@ -14,5 +14,9 @@ services:
       - key: RENTCAST_API_KEY
         sync: false
         # Set to your RentCast API key (https://www.rentcast.io/api).
+      - key: ANTHROPIC_API_KEY
+        sync: false
+        # Set to your Anthropic API key (https://platform.claude.com/), for the
+        # build-restrictions chat. Without it, the chat says it isn't set up.
       - key: PYTHON_VERSION
         value: 3.11.0

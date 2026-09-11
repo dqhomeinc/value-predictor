@@ -144,3 +144,25 @@ class Analysis(db.Model):
         if not self.property_sale_history:
             return []
         return [entry for _, entry in sorted(self.property_sale_history.items(), reverse=True)]
+
+
+class ChatMessage(db.Model):
+    """
+    One message in the build-restrictions chat on an analysis's results
+    page (services/zoning_chat.py). Saved as question/answer pairs, and
+    only once a reply succeeds, so a failed request leaves no dangling
+    question and doesn't count toward the daily cap.
+    """
+    __tablename__ = 'chat_message'
+
+    id = db.Column(db.Integer, primary_key=True)
+    analysis_id = db.Column(db.Integer, db.ForeignKey('analysis.id', ondelete='CASCADE'), nullable=False, index=True)
+    role = db.Column(db.String(10), nullable=False)  # 'user' | 'assistant'
+    content = db.Column(db.Text, nullable=False)
+    sources = db.Column(db.JSON, nullable=True)  # pages an assistant reply cited: [{'title', 'url'}]
+    # Billed web searches behind an assistant reply, for keeping an eye on spend.
+    web_searches = db.Column(db.Integer, nullable=False, default=0, server_default='0')
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+    analysis = db.relationship('Analysis', backref=db.backref(
+        'chat_messages', lazy=True, order_by='ChatMessage.id', cascade='all, delete-orphan'))

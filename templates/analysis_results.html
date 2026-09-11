@@ -208,6 +208,48 @@
     {% endif %}
   </section>
 
+  <section id="zoning-chat" class="zoning-chat"
+           data-chat-url="{{ url_for('main.analysis_chat', analysis_id=analysis.id) }}"
+           data-csrf-token="{{ csrf_token() }}">
+    <h3>Ask about build restrictions</h3>
+    {% if chat_available %}
+      <p class="muted chat-intro">
+        Ask what you could build here. Answers start from this page's zoning data and search the web
+        when it doesn't cover your question. They can be wrong, so confirm anything you'd rely on with
+        the town.
+        {% if chat_mock %}<strong>Local dev:</strong> replies are canned mock text, not Claude.{% endif %}
+      </p>
+      <ol class="chat-log" id="chat-log" aria-live="polite">
+        {% for message in chat_messages %}
+          <li class="chat-message chat-{{ message.role }}">
+            <div class="chat-text">{{ message.content }}</div>
+            {% if message.sources %}
+              <ul class="chat-sources">
+                {% for source in message.sources %}
+                  {% set source_url = source.url | safe_url %}
+                  {% if source_url %}<li><a href="{{ source_url }}" target="_blank" rel="noopener">{{ source.title or source_url }}</a></li>{% endif %}
+                {% endfor %}
+              </ul>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+      <div class="chat-suggestions"{% if chat_messages %} hidden{% endif %}>
+        <button type="button" class="chat-suggestion">How close to the property lines can I build?</button>
+        <button type="button" class="chat-suggestion">How big a house could I build on this lot?</button>
+        <button type="button" class="chat-suggestion">What permits would a teardown and rebuild need?</button>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <textarea id="chat-input" name="message" rows="2" maxlength="{{ chat_max_chars }}" required
+                  placeholder="Ask about setbacks, height, floor area, permits…"></textarea>
+        <button type="submit">Ask</button>
+      </form>
+      <p class="chat-status muted" id="chat-status" hidden></p>
+    {% else %}
+      <p class="muted">The chat isn't set up on this server yet.</p>
+    {% endif %}
+  </section>
+
   <section>
     <h3>Location</h3>
     {% if analysis.property_latitude and analysis.property_longitude %}
@@ -267,4 +309,5 @@
       'marketValueEstimate': analysis.market_value_estimate,
     } | tojson }}</script>
   <script src="{{ url_for('static', filename='results.js') }}"></script>
+  <script src="{{ url_for('static', filename='zoning-chat.js') }}"></script>
 {% endblock %}
