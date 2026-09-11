@@ -438,3 +438,40 @@ class TestWhatYouCanBuild:
         text = self._render(client, detail)
 
         assert 'What you can build' not in text
+
+    def test_atlas_numbers_are_labelled_as_a_copy(self, client):
+        detail = {**LEXINGTON_DISCOVERED, 'jurisdiction': 'Concord, NH', 'zoning_code': '',
+                  'atlas_standards': {
+                      'state': 'NH', 'jurisdiction': 'Concord', 'district': 'CVP',
+                      'district_name': 'Civic Performance', 'single_family': 'hearing',
+                      'front_ft': 15, 'side_ft': 15, 'rear_ft': 15, 'frontage_ft': 80,
+                      'min_lot_acres': None, 'max_height_ft': 45, 'max_stories': None,
+                      'max_lot_coverage_pct': 80, 'far': '1',
+                      'source': {'citation': 'National Zoning Atlas: New Hampshire',
+                                 'url': 'https://example.org/nh', 'as_of': 'data last updated 2024-03-12'}}}
+
+        text = self._render(client, detail)
+
+        assert 'What you can build: CVP (Civic Performance)' in text
+        assert 'Needs a public hearing' in text
+        assert 'National Zoning Atlas: New Hampshire' in text
+        assert 'digitized copy' in text
+
+    def test_atlas_district_that_disagrees_with_the_town_map_is_flagged(self, client):
+        detail = {**LEXINGTON_DISCOVERED, 'jurisdiction': 'Concord, NH', 'zoning_code': 'RN',
+                  'atlas_standards': {'jurisdiction': 'Concord', 'district': 'CVP', 'front_ft': 15,
+                                      'source': {'citation': 'Atlas', 'url': '', 'as_of': ''}}}
+
+        text = self._render(client, detail)
+
+        assert "town's map shows RN" in text
+
+    def test_hostile_source_url_is_not_linked(self, client):
+        detail = {**LEXINGTON_DISCOVERED, 'jurisdiction': 'Concord, NH', 'zoning_code': '',
+                  'atlas_standards': {'jurisdiction': 'Concord', 'front_ft': 15,
+                                      'source': {'citation': 'Atlas', 'url': 'javascript:alert(1)', 'as_of': ''}}}
+        analysis = make_logged_in_analysis(client, zoning_detail=detail)
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        assert 'href="javascript:' not in html

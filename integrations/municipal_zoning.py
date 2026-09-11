@@ -119,8 +119,9 @@ class ZoningRestriction:
 # for: services/analyzer.py looks up again for any cached detail from an
 # older version rather than serving it forever. 1 is the first versioned
 # shape; detail stored without a version predates it. 2 added the matched
-# layer and its last-updated date. 3 added the FEMA flood zone.
-DETAIL_VERSION = 3
+# layer and its last-updated date. 3 added the FEMA flood zone. 4 added
+# National Zoning Atlas standards for the states it covers.
+DETAIL_VERSION = 4
 
 
 @dataclass
@@ -147,6 +148,9 @@ class MunicipalZoningResult:
     # FEMA flood zone (integrations/fema_flood.py) for addresses that go
     # through discovery: {'zone', 'subtype', 'in_sfha', 'source'}, or {}.
     flood_zone: dict = field(default_factory=dict)
+    # Single-family standards from the National Zoning Atlas
+    # (integrations/zoning_atlas.py) where it covers the state, or {}.
+    atlas_standards: dict = field(default_factory=dict)
 
     def as_dict(self):
         """Plain JSON-safe dict, for the JSON columns on
@@ -166,6 +170,7 @@ class MunicipalZoningResult:
             'layer_name': self.layer_name,
             'data_updated': self.data_updated,
             'flood_zone': self.flood_zone,
+            'atlas_standards': self.atlas_standards,
             'detail_version': DETAIL_VERSION,
             'restrictions': [
                 {'label': r.label, 'detail': r.detail, 'severity': r.severity, 'url': r.url}
@@ -213,6 +218,7 @@ def _lookup_via_discovery(address, session):
     # depend on the discovery machinery (and tests of one don't drag in the
     # other).
     from integrations.fema_flood import lookup_flood_zone
+    from integrations.zoning_atlas import lookup_atlas_standards
     from integrations.zoning_discovery import (
         ZoningDiscoveryError,
         discover_for_jurisdiction,
@@ -225,17 +231,18 @@ def _lookup_via_discovery(address, session):
         raise MunicipalZoningUnavailableError(str(exc)) from exc
 
     flood = lookup_flood_zone(jurisdiction.lon, jurisdiction.lat, session=session)
+    atlas = lookup_atlas_standards(jurisdiction.state, jurisdiction.lon, jurisdiction.lat, session=session)
     try:
         found = discover_for_jurisdiction(jurisdiction, session=session)
     except ZoningDiscoveryError as exc:
         logger.info('No zoning layer discovered for %r: %s', address, exc)
         found = None
 
-    if found is None and flood is None:
+    if found is None and flood is None and atlas is None:
         raise MunicipalZoningUnavailableError(f'No zoning or flood data found for {address!r}')
 
     restriction = flood_restriction(flood)
-    return MunicipalZoningResult(
+    result = MunicipalZoningResult(
         zoning_code=found.zoning_code if found else '',
         source='discovered',
         jurisdiction=jurisdiction.label,
@@ -249,7 +256,18 @@ def _lookup_via_discovery(address, session):
         layer_name=found.layer_name if found else '',
         data_updated=found.data_updated if found else '',
         flood_zone=flood.as_dict() if flood else {},
+        atlas_standards=atlas or {},
     )
+    if found is None and atlas:
+        # The Atlas matched the parcel to a district itself, so it can name
+        # the district when no town layer was found. The page's provenance
+        # line then truthfully names the Atlas layer as what was matched.
+        result.zoning_code = atlas['district']
+        result.zoning_description = atlas['district_name']
+        result.service_title = atlas['source']['citation']
+        result.layer_name = ''
+        result.data_updated = atlas['source']['data_updated']
+    return result
 
 
 def flood_restriction(flood):

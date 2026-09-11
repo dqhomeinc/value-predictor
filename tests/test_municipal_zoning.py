@@ -444,3 +444,73 @@ class TestFloodRestriction:
 
     def test_no_zone_is_no_restriction(self):
         assert flood_restriction(None) is None
+
+
+CENSUS_CONCORD_NH = {
+    'result': {'addressMatches': [{
+        'matchedAddress': '41 GREEN ST, CONCORD, NH, 03301',
+        'coordinates': {'x': -71.5383, 'y': 43.2040},
+        'geographies': {
+            'Incorporated Places': [{'NAME': 'Concord city'}],
+            'Counties': [{'NAME': 'Merrimack County'}],
+            'States': [{'STUSAB': 'NH'}],
+        },
+    }]},
+}
+ATLAS_CVP = {'features': [{'attributes': {
+    'Jurisdiction': 'Concord', 'Abbreviated_District_Name': 'CVP', 'Full_District_Name': 'Civic Performance',
+    'Overlay': 'No', 'NonBuild': 'N', 'F1_Family_Treatment': 'Public Hearing',
+    'F1_Family_Front_Setback____of_f': 15, 'F1_Family_Side_Setback____of_fe': 15,
+    'F1_Family_Rear_Setback____of_fe': 15,
+}}]}
+
+
+def atlas_session(discovery_overrides=None, atlas=ATLAS_CVP):
+    # FakeSession takes the first matching fragment, and the Atlas URL also
+    # contains '/FeatureServer/0/query', so its routes have to come first.
+    discovery = discovery_session({'geocoding.geo.census.gov': CENSUS_CONCORD_NH, **(discovery_overrides or {})})
+    return FakeSession({
+        'NH_Zoning_Atlas_Full_Districts/FeatureServer/0/query': atlas,
+        'NH_Zoning_Atlas_Full_Districts': {'editingInfo': {'dataLastEditDate': 1710201600000}},
+        **discovery.routes,
+    })
+
+
+class TestDiscoveryWithZoningAtlas:
+    ADDRESS = '41 Green St, Concord, NH 03301'
+
+    def test_carries_atlas_standards_alongside_the_town_layer(self):
+        concord_search = {'results': [{'title': 'Concord Zoning', 'owner': 'concord_gis', 'snippet': '',
+                                       'url': 'https://example.arcgis.com/zoning/FeatureServer'}]}
+
+        result = lookup_municipal_zoning(self.ADDRESS, session=atlas_session(
+            {'arcgis.com/sharing/rest/search': concord_search}))
+
+        assert result.zoning_code == 'RM-M'  # the town layer still names the district
+        assert result.atlas_standards['district'] == 'CVP'
+        assert result.atlas_standards['front_ft'] == 15
+        assert result.as_dict()['atlas_standards']['source']['citation'] == 'National Zoning Atlas: New Hampshire'
+        assert result.as_dict()['detail_version'] == DETAIL_VERSION == 4
+
+    def test_atlas_names_the_district_when_no_town_layer_is_found(self):
+        session = atlas_session({'arcgis.com/sharing/rest/search': {'results': []}})
+
+        result = lookup_municipal_zoning(self.ADDRESS, session=session)
+
+        assert result.zoning_code == 'CVP'
+        assert result.zoning_description == 'Civic Performance'
+        assert result.service_title == 'National Zoning Atlas: New Hampshire'
+        assert result.data_updated == '2024-03-12'
+
+    def test_atlas_alone_is_enough_to_answer(self):
+        session = atlas_session({'arcgis.com/sharing/rest/search': {'results': []},
+                                 'hazards.fema.gov': requests.ConnectionError('down')})
+
+        assert lookup_municipal_zoning(self.ADDRESS, session=session).zoning_code == 'CVP'
+
+    def test_states_without_an_atlas_never_query_it(self):
+        session = discovery_session()
+
+        lookup_municipal_zoning('5625 Forbes Ave, Pittsburgh, PA 15217', session=session)
+
+        assert not any('Zoning_Atlas' in url for url in session.calls)
