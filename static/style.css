@@ -565,3 +565,30 @@ table td:last-child {
   font-size: 12px;
   line-height: 1.5;
 }
+
+.standards {
+  margin: 4px 0 18px;
+}
+
+.standards-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.standards-table td {
+  vertical-align: top;
+}
+
+.standards-note {
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.standards-source {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
