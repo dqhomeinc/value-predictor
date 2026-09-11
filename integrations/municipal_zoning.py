@@ -118,8 +118,9 @@ class ZoningRestriction:
 # result. Bump it when the stored detail gains information worth re-fetching
 # for: services/analyzer.py looks up again for any cached detail from an
 # older version rather than serving it forever. 1 is the first versioned
-# shape; detail stored without a version predates it.
-DETAIL_VERSION = 1
+# shape; detail stored without a version predates it. 2 added the matched
+# layer and its last-updated date.
+DETAIL_VERSION = 2
 
 
 @dataclass
@@ -132,15 +133,17 @@ class MunicipalZoningResult:
     ordinances: list = field(default_factory=list)  # of {'number', 'url'}
     case_manager: dict = field(default_factory=dict)  # {'name', 'phone'}
     # Set by discovery (integrations/zoning_discovery.py): the district's
-    # human-readable name, and where the answer came from. Provenance
-    # matters because a discovered service may be published by the city
-    # itself or by a third party whose copy could be stale — the page says
-    # which, rather than presenting both as equally authoritative.
+    # human-readable name, and where the answer came from: the layer, its
+    # publisher, and when its data was last edited. The page reports those
+    # facts rather than any claim about who's official. `provenance` is
+    # kept only as the ranking hint discovery used.
     zoning_description: str = ''
-    provenance: str = ''  # '' | 'official' | 'unverified'
+    provenance: str = ''  # '' | 'official' | 'unverified'; ranking hint, never shown
     service_title: str = ''
     service_owner: str = ''
     reference_url: str = ''
+    layer_name: str = ''
+    data_updated: str = ''  # ISO date, when the layer publishes one
 
     def as_dict(self):
         """Plain JSON-safe dict, for the JSON columns on
@@ -157,6 +160,8 @@ class MunicipalZoningResult:
             'service_title': self.service_title,
             'service_owner': self.service_owner,
             'reference_url': self.reference_url,
+            'layer_name': self.layer_name,
+            'data_updated': self.data_updated,
             'detail_version': DETAIL_VERSION,
             'restrictions': [
                 {'label': r.label, 'detail': r.detail, 'severity': r.severity, 'url': r.url}
@@ -208,6 +213,8 @@ def _lookup_via_discovery(address, session):
         service_title=found.service_title,
         service_owner=found.service_owner,
         reference_url=found.reference_url,
+        layer_name=found.layer_name,
+        data_updated=found.data_updated,
     )
 
 

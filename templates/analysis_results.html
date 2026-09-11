@@ -86,26 +86,23 @@
     <h3>Build restrictions</h3>
     {% if analysis.zoning_detail %}
       {% set zd = analysis.zoning_detail %}
-      {% if zd.zoning_description %}
+      {% if zd.zoning_code %}
         <p class="zoning-headline">
-          <strong>{{ zd.zoning_code }}</strong> — {{ zd.zoning_description }}
+          Zoning district: <strong>{{ zd.zoning_code }}</strong>
+          {%- if zd.zoning_description %} — {{ zd.zoning_description }}{% endif %}
         </p>
       {% endif %}
       {% if zd.source == 'discovered' %}
         <p class="muted zoning-provenance">
-          Found automatically from {{ zd.jurisdiction }}'s public GIS
-          {%- if zd.service_title %} (&ldquo;{{ zd.service_title }}&rdquo;{% if zd.service_owner %}, published by
-          {{ zd.service_owner }}{% endif %}){% endif %}.
-          {% if zd.provenance != 'official' %}
-            We couldn't automatically confirm this account belongs to the jurisdiction — it may well
-            be the city's, or a third party's copy that could be out of date. Worth confirming.
-          {% endif %}
-          Only the base zoning district is available this way — overlays, historic designations and
-          floodplain status aren't included, and any of them can independently block a teardown.
-          {% if zd.reference_url %}
-            {% set ref_url = zd.reference_url | safe_url %}
-            {% if ref_url %}<a href="{{ ref_url }}" target="_blank" rel="noopener">View the zoning code</a>.{% endif %}
-          {% endif %}
+          Found by matching this parcel's location against
+          {% if zd.layer_name %}the &ldquo;{{ zd.layer_name }}&rdquo; layer of {% endif %}&ldquo;{{ zd.service_title }}&rdquo;
+          {%- if zd.service_owner %}, published on ArcGIS by {{ zd.service_owner }}{% endif %}.
+          {% if zd.data_updated %}Its data was last updated {{ zd.data_updated }}.
+          {%- elif 'data_updated' in zd %}It doesn't say when its data was last updated.{% endif %}
+          This is the base district only. Overlays, historic designations and floodplain status aren't
+          included, and any of them can independently block a teardown.
+          {% set ref_url = zd.reference_url | safe_url %}
+          {% if ref_url %}<a href="{{ ref_url }}" target="_blank" rel="noopener">View the zoning code</a>.{% endif %}
         </p>
       {% endif %}
       {% if restrictions %}

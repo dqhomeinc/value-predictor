@@ -28,12 +28,17 @@ answer for a tool people make financial decisions from:
   * Wrong jurisdiction. An address in Montpelier, VT matched a service for
     Middlesex County, NJ. Guard: the state must match (_score_item returns
     None to disqualify outright, never merely down-rank).
-  * Untrustworthy source. Nashville's best hit was published by a private
-    engineering consultant, NYC's by a personal account. Data may be fine
-    or years stale, and there's no way to tell from here. Guard: don't
-    reject it, but classify provenance (OFFICIAL vs UNVERIFIED) so the UI
-    can say where a number came from rather than implying the city
-    published it.
+  * Unknowable authority. Nashville's best hit was published by a private
+    engineering consultant, NYC's by a personal account, and an account
+    *named* for a city proves nothing either: `lexingtonGIS` turned out to
+    publish Circle Pines, Minnesota, while the right answer for
+    Lexington, MA came from a personal account. Who is official can't be
+    established from here. What can be: a point-in-polygon hit proves the
+    layer covers this exact parcel, and layer metadata says when its data
+    was last edited. So the page reports those facts (layer, publisher,
+    last-updated date) and makes no claim about officialness. The
+    OFFICIAL / UNVERIFIED split survives only as a hint for which
+    candidate to try first.
 
 Coverage is real but partial, and always will be: some jurisdictions
 publish nothing machine-readable at all. "Not found" is a normal outcome.
@@ -42,6 +47,7 @@ publish nothing machine-readable at all. "Not found" is a normal outcome.
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import requests
 
@@ -53,9 +59,12 @@ USER_AGENT = 'value-predictor/1.0 (zoning discovery; see integrations/zoning_dis
 CENSUS_GEOCODE_URL = 'https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress'
 AGOL_SEARCH_URL = 'https://www.arcgis.com/sharing/rest/search'
 
-# Provenance of a discovered service.
-OFFICIAL = 'official'      # published by an account that looks like the jurisdiction itself
-UNVERIFIED = 'unverified'  # a real zoning layer, but from a third-party account
+# Whether a service's publishing account *looks like* the jurisdiction,
+# judged from its name alone. Only a hint for which candidate to try first,
+# never shown to the user as a trust claim, because account names don't
+# establish it (see "Unknowable authority" above).
+OFFICIAL = 'official'
+UNVERIFIED = 'unverified'
 
 # Trailing words in Census place names that aren't part of the city's name
 # ('Pittsburgh city' -> 'Pittsburgh').
@@ -119,6 +128,8 @@ class DiscoveredZoning:
     service_url: str = ''
     layer_id: int = 0
     reference_url: str = ''  # a code/ordinance link carried on the feature, when present
+    layer_name: str = ''     # the matched layer's own name, e.g. 'ZONING'
+    data_updated: str = ''   # ISO date the layer's data was last edited, when it says
     extras: dict = field(default_factory=dict)
 
 
@@ -336,6 +347,8 @@ def _try_service(item, provenance, jurisdiction, session):
             service_url=url,
             layer_id=layer.get('id', 0),
             reference_url=_pick_reference_url(attrs),
+            layer_name=layer.get('name') or '',
+            data_updated=_layer_data_updated(session, url, layer.get('id', 0)),
         )
     return None
 
@@ -372,6 +385,30 @@ def _query_point(session, service_url, layer_id, jurisdiction):
         return None
     features = payload.get('features') or []
     return features[0].get('attributes') if features else None
+
+
+def _layer_data_updated(session, service_url, layer_id):
+    """
+    ISO date the layer's data was last edited, from its metadata's
+    editingInfo, or '' when the layer doesn't publish one. One extra call,
+    made only for the layer that matched. A stale layer is the main way a
+    geographically correct answer can still be wrong, so the date is worth
+    showing.
+    """
+    try:
+        meta = _get(session, f'{service_url}/{layer_id}', {'f': 'json'})
+    except requests.RequestException:
+        return ''
+    info = meta.get('editingInfo') if isinstance(meta, dict) else None
+    if not isinstance(info, dict):
+        return ''
+    stamp = info.get('dataLastEditDate') or info.get('lastEditDate')
+    if not isinstance(stamp, (int, float)) or isinstance(stamp, bool):
+        return ''
+    try:
+        return datetime.fromtimestamp(stamp / 1000, tz=timezone.utc).date().isoformat()
+    except (OverflowError, OSError, ValueError):
+        return ''
 
 
 def _pick_zoning_fields(attrs):
