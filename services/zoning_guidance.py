@@ -55,6 +55,24 @@ RESTRICTION_GUIDANCE = {
                  'higher insurance, and in some cases no permit for new habitable structures.',
         'governs': 'whether you can build, required elevation, insurance cost',
     },
+    'FEMA Special Flood Hazard Area': {
+        'means': "FEMA's regulatory floodplain, with roughly a 1-in-100 chance of flooding in any year. "
+                 'A rebuild here usually has to raise its lowest floor above the base flood elevation, '
+                 'federally backed mortgages require flood insurance, and some places restrict new '
+                 'construction outright.',
+        'governs': 'whether and how you can rebuild, required floor elevation, insurance cost',
+    },
+    'FEMA moderate flood hazard': {
+        'means': "Outside FEMA's regulatory floodplain but inside the 500-year flood area. Lower risk, "
+                 'no mandatory flood insurance, and usually no special building rules, though '
+                 'insurance is still worth pricing.',
+        'governs': 'insurance cost, rarely what you can build',
+    },
+    'FEMA undetermined flood hazard': {
+        'means': "FEMA hasn't studied flood risk here, so it's unknown rather than low. Check local "
+                 'records; lenders and insurers may treat it cautiously.',
+        'governs': 'insurance and lending, until the risk is mapped',
+    },
     'Wildland Urban Interface 2024': {
         'means': 'Wildfire-hazard construction rules apply — fire-resistant materials and defensible '
                  'space. Adds cost to the rebuild rather than limiting its size.',

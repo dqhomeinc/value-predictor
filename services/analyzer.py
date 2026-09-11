@@ -161,8 +161,9 @@ def _resolve_zoning(address, rentcast_zoning, municipal_zoning_lookup):
     # Only detail stored at the current shape counts as a cache hit. Older
     # detail lacks whatever's been added to it since and would otherwise be
     # served forever, so it's looked up again. These lookups are free.
-    if isinstance(detail, dict) and detail.get('detail_version') == DETAIL_VERSION and cached.municipal_zoning_code:
-        return cached.municipal_zoning_code, cached.municipal_zoning_source, detail
+    if isinstance(detail, dict) and detail.get('detail_version') == DETAIL_VERSION:
+        return _zoning_with_detail(cached.municipal_zoning_code, cached.municipal_zoning_source,
+                                   detail, rentcast_zoning)
 
     try:
         result = municipal_zoning_lookup(address)
@@ -173,12 +174,23 @@ def _resolve_zoning(address, rentcast_zoning, municipal_zoning_lookup):
 
     detail = result.as_dict()
     if cached is not None:
-        cached.municipal_zoning_code = result.zoning_code
+        cached.municipal_zoning_code = result.zoning_code or None
         cached.municipal_zoning_source = result.source
         cached.municipal_zoning_detail = detail
         db.session.commit()
 
-    return result.zoning_code, result.source, detail
+    return _zoning_with_detail(result.zoning_code, result.source, detail, rentcast_zoning)
+
+
+def _zoning_with_detail(code, source, detail, rentcast_zoning):
+    """
+    A municipal result can carry restrictions without a zoning code: a
+    FEMA flood zone, when discovery found no zoning layer. The code then
+    falls back to RentCast's, and the detail is kept either way.
+    """
+    if code:
+        return code, source, detail
+    return (rentcast_zoning, 'rentcast', detail) if rentcast_zoning else (None, None, detail)
 
 
 def build_municipal_zoning_lookup():

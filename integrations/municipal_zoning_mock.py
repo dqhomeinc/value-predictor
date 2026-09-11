@@ -78,17 +78,30 @@ def mock_lookup_municipal_zoning(address, session=None):
             raise MunicipalZoningUnavailableError(
                 f'No zoning service discovered for {address!r}'
             )
-        code = rng.choice(MOCK_ZONING_CODES)
+        # FEMA flood zones come from one national source, so real discovery
+        # returns one for nearly every address. Mirror that, with the
+        # occasional regulatory floodplain so the critical path shows up.
+        in_sfha = rng.random() < 0.15
+        flood = {'zone': 'AE' if in_sfha else 'X', 'in_sfha': in_sfha, 'source': 'FEMA NFHL',
+                 'subtype': '' if in_sfha else 'AREA OF MINIMAL FLOOD HAZARD'}
+        restrictions = [ZoningRestriction(label='FEMA Special Flood Hazard Area', detail='Zone AE',
+                                          severity='critical')] if in_sfha else []
+        # Some addresses get a flood zone but no zoning layer, the other
+        # real outcome now that FEMA is looked up regardless.
+        found_zoning = rng.random() < 0.8
         return MunicipalZoningResult(
-            zoning_code=code,
+            zoning_code=rng.choice(MOCK_ZONING_CODES) if found_zoning else '',
             source='discovered',
             jurisdiction='Mockville, TX',
-            zoning_description=rng.choice(MOCK_DESCRIPTIONS),
+            in_floodplain=in_sfha,
+            restrictions=restrictions,
+            zoning_description=rng.choice(MOCK_DESCRIPTIONS) if found_zoning else '',
             provenance=OFFICIAL if rng.random() < 0.4 else UNVERIFIED,
-            service_title='Mockville Zoning Districts',
-            service_owner='mockville.gis' if rng.random() < 0.4 else 'someconsultant_corp',
-            layer_name='Zoning',
-            data_updated='2024-03-18',
+            service_title='Mockville Zoning Districts' if found_zoning else '',
+            service_owner='mockville.gis' if found_zoning else '',
+            layer_name='Zoning' if found_zoning else '',
+            data_updated='2024-03-18' if found_zoning else '',
+            flood_zone=flood,
         )
 
     restrictions = []

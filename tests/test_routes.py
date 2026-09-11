@@ -333,6 +333,7 @@ LEXINGTON_DISCOVERED = {
     'in_floodplain': False, 'ordinances': [], 'case_manager': {}, 'zoning_description': '',
     'provenance': 'unverified', 'service_title': 'TownOwnedParcels', 'service_owner': 'jBaldasaro',
     'reference_url': '', 'layer_name': 'ZONING', 'data_updated': '2022-05-11',
+    'flood_zone': {'zone': 'X', 'subtype': 'AREA OF MINIMAL FLOOD HAZARD', 'in_sfha': False, 'source': 'FEMA NFHL'},
     'detail_version': 2, 'restrictions': [],
 }
 
@@ -364,11 +365,41 @@ class TestDiscoveredZoningDisplay:
         assert 'published on ArcGIS by jBaldasaro' in text
         assert 'last updated 2022-05-11' in text
 
+    def test_shows_the_fema_flood_zone(self, client):
+        text = self._render(client, LEXINGTON_DISCOVERED)
+
+        assert 'FEMA flood zone: X — area of minimal flood hazard' in text
+        assert "FEMA's national flood maps" in text
+
+    def test_special_flood_hazard_area_leads_with_the_warning(self, client):
+        detail = {
+            **LEXINGTON_DISCOVERED,
+            'in_floodplain': True,
+            'flood_zone': {'zone': 'AE', 'subtype': '', 'in_sfha': True, 'source': 'FEMA NFHL'},
+            'restrictions': [{'label': 'FEMA Special Flood Hazard Area', 'detail': 'Zone AE',
+                              'severity': 'critical', 'url': ''}],
+        }
+
+        text = self._render(client, detail)
+
+        assert 'can block a teardown or restrict the rebuild' in text
+        assert 'FEMA Special Flood Hazard Area' in text
+        assert 'FEMA flood zone: AE — inside the Special Flood Hazard Area' in text
+
+    def test_flood_zone_without_a_district(self, client):
+        detail = {**LEXINGTON_DISCOVERED, 'zoning_code': '', 'service_title': '', 'service_owner': '',
+                  'layer_name': '', 'data_updated': ''}
+
+        text = self._render(client, detail)
+
+        assert 'No zoning district found for this address.' in text
+        assert 'FEMA flood zone: X' in text
+
     def test_detail_saved_before_these_fields_still_renders(self, client):
         # Analyses saved earlier keep their stored detail. The page has to
         # render it without inventing facts it never recorded.
         old = {key: value for key, value in LEXINGTON_DISCOVERED.items()
-               if key not in ('layer_name', 'data_updated', 'detail_version')}
+               if key not in ('layer_name', 'data_updated', 'flood_zone', 'detail_version')}
 
         text = self._render(client, old)
 

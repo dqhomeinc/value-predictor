@@ -119,8 +119,8 @@ class ZoningRestriction:
 # for: services/analyzer.py looks up again for any cached detail from an
 # older version rather than serving it forever. 1 is the first versioned
 # shape; detail stored without a version predates it. 2 added the matched
-# layer and its last-updated date.
-DETAIL_VERSION = 2
+# layer and its last-updated date. 3 added the FEMA flood zone.
+DETAIL_VERSION = 3
 
 
 @dataclass
@@ -144,6 +144,9 @@ class MunicipalZoningResult:
     reference_url: str = ''
     layer_name: str = ''
     data_updated: str = ''  # ISO date, when the layer publishes one
+    # FEMA flood zone (integrations/fema_flood.py) for addresses that go
+    # through discovery: {'zone', 'subtype', 'in_sfha', 'source'}, or {}.
+    flood_zone: dict = field(default_factory=dict)
 
     def as_dict(self):
         """Plain JSON-safe dict, for the JSON columns on
@@ -162,6 +165,7 @@ class MunicipalZoningResult:
             'reference_url': self.reference_url,
             'layer_name': self.layer_name,
             'data_updated': self.data_updated,
+            'flood_zone': self.flood_zone,
             'detail_version': DETAIL_VERSION,
             'restrictions': [
                 {'label': r.label, 'detail': r.detail, 'severity': r.severity, 'url': r.url}
@@ -194,28 +198,76 @@ def lookup_municipal_zoning(address, session=None):
 
 
 def _lookup_via_discovery(address, session):
+    """
+    The nationwide path for addresses with no curated adapter: the base
+    zoning district from discovery, plus the FEMA flood zone at the same
+    point.
+
+    FEMA is looked up whether or not discovery finds a zoning layer. It's
+    one national source rather than per-city data, so it covers addresses
+    discovery can't, and a parcel in a regulatory floodplain is worth
+    flagging even when nothing else is known about it. Only when both come
+    up empty is there nothing to report.
+    """
     # Imported here rather than at module scope so the curated path doesn't
     # depend on the discovery machinery (and tests of one don't drag in the
     # other).
-    from integrations.zoning_discovery import ZoningDiscoveryError, discover_zoning
+    from integrations.fema_flood import lookup_flood_zone
+    from integrations.zoning_discovery import (
+        ZoningDiscoveryError,
+        discover_for_jurisdiction,
+        geocode,
+    )
 
     try:
-        found = discover_zoning(address, session=session)
+        jurisdiction = geocode(address, session=session)
     except ZoningDiscoveryError as exc:
         raise MunicipalZoningUnavailableError(str(exc)) from exc
 
+    flood = lookup_flood_zone(jurisdiction.lon, jurisdiction.lat, session=session)
+    try:
+        found = discover_for_jurisdiction(jurisdiction, session=session)
+    except ZoningDiscoveryError as exc:
+        logger.info('No zoning layer discovered for %r: %s', address, exc)
+        found = None
+
+    if found is None and flood is None:
+        raise MunicipalZoningUnavailableError(f'No zoning or flood data found for {address!r}')
+
+    restriction = flood_restriction(flood)
     return MunicipalZoningResult(
-        zoning_code=found.zoning_code,
+        zoning_code=found.zoning_code if found else '',
         source='discovered',
-        jurisdiction=found.jurisdiction,
-        zoning_description=found.zoning_description,
-        provenance=found.provenance,
-        service_title=found.service_title,
-        service_owner=found.service_owner,
-        reference_url=found.reference_url,
-        layer_name=found.layer_name,
-        data_updated=found.data_updated,
+        jurisdiction=jurisdiction.label,
+        in_floodplain=bool(flood and flood.in_sfha),
+        restrictions=[restriction] if restriction else [],
+        zoning_description=found.zoning_description if found else '',
+        provenance=found.provenance if found else '',
+        service_title=found.service_title if found else '',
+        service_owner=found.service_owner if found else '',
+        reference_url=found.reference_url if found else '',
+        layer_name=found.layer_name if found else '',
+        data_updated=found.data_updated if found else '',
+        flood_zone=flood.as_dict() if flood else {},
     )
+
+
+def flood_restriction(flood):
+    """
+    The restriction a FEMA flood zone implies, or None for the common
+    minimal-hazard case, which the page reports as a fact rather than
+    flagging as a restriction.
+    """
+    if flood is None:
+        return None
+    if flood.in_sfha:
+        return ZoningRestriction(label='FEMA Special Flood Hazard Area', detail=f'Zone {flood.zone}',
+                                 severity='critical')
+    if flood.zone.upper() == 'D':
+        return ZoningRestriction(label='FEMA undetermined flood hazard', detail='Zone D', severity='info')
+    if '0.2 PCT' in flood.subtype.upper():
+        return ZoningRestriction(label='FEMA moderate flood hazard', detail='Zone X (shaded)', severity='info')
+    return None
 
 
 # Human-readable coverage, for telling a user why an address returned

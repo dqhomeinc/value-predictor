@@ -481,6 +481,15 @@ PITTSBURGH_RM_M = MunicipalZoningResult(
     zoning_description='MULTI-UNIT RESIDENTIAL MODERATE DENSITY',
 )
 
+PITTSBURGH_FLOOD_ONLY = MunicipalZoningResult(
+    zoning_code='',
+    source='discovered',
+    jurisdiction='Pittsburgh, PA',
+    in_floodplain=True,
+    restrictions=[ZoningRestriction(label='FEMA Special Flood Hazard Area', detail='Zone AE', severity='critical')],
+    flood_zone={'zone': 'AE', 'subtype': '', 'in_sfha': True, 'source': 'FEMA NFHL'},
+)
+
 
 class TestZoningDetailCache:
     ADDRESS = '5625 Forbes Ave, Pittsburgh, PA 15217'
@@ -525,3 +534,26 @@ class TestZoningDetailCache:
 
         assert lookup.calls == 2
         assert refreshed.zoning_detail['detail_version'] == DETAIL_VERSION
+
+    def test_flood_only_result_keeps_rentcast_zoning_and_the_flood_detail(self, app, user):
+        # Discovery found no zoning layer but FEMA mapped the parcel: the
+        # zoning code falls back to RentCast's and the flood zone is kept.
+        analysis = self._analyze(user, self._client(), lambda address: PITTSBURGH_FLOOD_ONLY)
+
+        assert analysis.property_zoning == 'R-1'
+        assert analysis.zoning_source == 'rentcast'
+        assert analysis.zoning_detail['flood_zone']['zone'] == 'AE'
+        row = PropertyLookupCache.query.filter_by(normalized_address=self.CACHE_KEY).first()
+        assert row.municipal_zoning_code is None
+        assert row.municipal_zoning_detail['detail_version'] == DETAIL_VERSION
+
+    def test_flood_only_detail_is_served_from_cache(self, app, user):
+        client = self._client()
+        lookup = CountingZoningLookup(PITTSBURGH_FLOOD_ONLY)
+
+        self._analyze(user, client, lookup)
+        second = self._analyze(user, client, lookup)
+
+        assert lookup.calls == 1
+        assert second.property_zoning == 'R-1'
+        assert second.zoning_detail['flood_zone']['zone'] == 'AE'

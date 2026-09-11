@@ -1,9 +1,11 @@
 import pytest
 import requests
 
+from integrations.fema_flood import FloodZone
 from integrations.municipal_zoning import (
     DETAIL_VERSION,
     MunicipalZoningUnavailableError,
+    flood_restriction,
     lookup_municipal_zoning,
     safe_external_url,
 )
@@ -319,14 +321,19 @@ PITTSBURGH_SEARCH = {'results': [{
 }]}
 
 
+def fema(zone, in_sfha, subtype=''):
+    return {'features': [{'attributes': {'FLD_ZONE': zone, 'ZONE_SUBTY': subtype, 'SFHA_TF': 'T' if in_sfha else 'F'}}]}
+
+
 def discovery_session(overrides=None):
-    """Routes for the nationwide path: Census geocode, ArcGIS search, and
-    the matched zoning layer and its edit date. The first matching URL
-    fragment wins, so the layer-metadata route has to sit between the
+    """Routes for the nationwide path: Census geocode, ArcGIS search, the
+    matched zoning layer and its edit date, and FEMA. The first matching
+    URL fragment wins, so the layer-metadata route has to sit between the
     query route and the service-root route."""
     routes = {
         'geocoding.geo.census.gov': CENSUS_PITTSBURGH,
         'arcgis.com/sharing/rest/search': PITTSBURGH_SEARCH,
+        'hazards.fema.gov': fema('X', False, 'AREA OF MINIMAL FLOOD HAZARD'),
         '/FeatureServer/0/query': {'features': [{'attributes': {
             'ZON_NEW': 'RM-M', 'Full_Zoning_Type': 'MULTI-UNIT RESIDENTIAL MODERATE DENSITY'}}]},
         'FeatureServer/0': {'name': 'Zoning', 'editingInfo': {'dataLastEditDate': 1652227200000}},
@@ -353,3 +360,87 @@ class TestDiscoveredProvenance:
         assert detail['layer_name'] == 'Zoning'
         assert detail['data_updated'] == '2022-05-11'
         assert detail['detail_version'] == DETAIL_VERSION
+
+
+class TestDiscoveryWithFloodZones:
+    ADDRESS = '5625 Forbes Ave, Pittsburgh, PA 15217'
+
+    def test_discovered_result_carries_the_fema_flood_zone(self):
+        result = lookup_municipal_zoning(self.ADDRESS, session=discovery_session())
+
+        assert result.source == 'discovered'
+        assert result.zoning_code == 'RM-M'
+        assert result.flood_zone == {'zone': 'X', 'subtype': 'AREA OF MINIMAL FLOOD HAZARD',
+                                     'in_sfha': False, 'source': 'FEMA NFHL'}
+        # Minimal hazard is a fact on the page, not a restriction.
+        assert result.restrictions == []
+        assert result.in_floodplain is False
+
+    def test_special_flood_hazard_area_is_a_critical_restriction(self):
+        session = discovery_session({'hazards.fema.gov': fema('AE', True)})
+
+        result = lookup_municipal_zoning(self.ADDRESS, session=session)
+
+        assert result.in_floodplain is True
+        assert result.restrictions[0].label == 'FEMA Special Flood Hazard Area'
+        assert result.restrictions[0].severity == 'critical'
+        assert result.restrictions[0].detail == 'Zone AE'
+
+    def test_flood_zone_is_reported_even_when_no_zoning_layer_is_found(self):
+        # Discovery covers much of the country but not all of it. FEMA is one
+        # national source, so a parcel in a floodplain still gets flagged.
+        session = discovery_session({
+            'arcgis.com/sharing/rest/search': {'results': []},
+            'hazards.fema.gov': fema('AE', True),
+        })
+
+        result = lookup_municipal_zoning(self.ADDRESS, session=session)
+
+        assert result.zoning_code == ''
+        assert result.flood_zone['zone'] == 'AE'
+        assert result.restrictions[0].severity == 'critical'
+
+    def test_nothing_found_at_all_is_still_unavailable(self):
+        session = discovery_session({
+            'arcgis.com/sharing/rest/search': {'results': []},
+            'hazards.fema.gov': {'features': []},
+        })
+
+        with pytest.raises(MunicipalZoningUnavailableError):
+            lookup_municipal_zoning(self.ADDRESS, session=session)
+
+    def test_a_fema_outage_still_returns_the_zoning_district(self):
+        session = discovery_session({'hazards.fema.gov': requests.ConnectionError('down')})
+
+        result = lookup_municipal_zoning(self.ADDRESS, session=session)
+
+        assert result.zoning_code == 'RM-M'
+        assert result.flood_zone == {}
+
+    def test_stored_detail_carries_the_current_version(self):
+        detail = lookup_municipal_zoning(self.ADDRESS, session=discovery_session()).as_dict()
+
+        assert detail['detail_version'] == DETAIL_VERSION
+        assert detail['flood_zone']['zone'] == 'X'
+        assert detail['data_updated'] == '2022-05-11'
+
+
+class TestFloodRestriction:
+    def test_minimal_hazard_is_not_a_restriction(self):
+        zone = FloodZone(zone='X', subtype='AREA OF MINIMAL FLOOD HAZARD', in_sfha=False)
+
+        assert flood_restriction(zone) is None
+
+    def test_moderate_hazard_is_informational(self):
+        zone = FloodZone(zone='X', subtype='0.2 PCT ANNUAL CHANCE FLOOD HAZARD', in_sfha=False)
+
+        restriction = flood_restriction(zone)
+
+        assert restriction.label == 'FEMA moderate flood hazard'
+        assert restriction.severity == 'info'
+
+    def test_undetermined_zone_is_informational(self):
+        assert flood_restriction(FloodZone(zone='D', subtype='', in_sfha=False)).severity == 'info'
+
+    def test_no_zone_is_no_restriction(self):
+        assert flood_restriction(None) is None
