@@ -70,6 +70,7 @@ def make_logged_in_analysis(
     market_value_comps_snapshot=None,
     zoning_detail=None,
     market_value_method='rentcast_avm',
+    property_lot_size=None,
 ):
     client.post('/register', data={
         'username': 'flipper', 'email': 'f@example.com', 'password': 'correcthorsebatterystaple',
@@ -89,6 +90,7 @@ def make_logged_in_analysis(
         market_value_comps_count=3,
         market_value_comps_snapshot=market_value_comps_snapshot,
         zoning_detail=zoning_detail,
+        property_lot_size=property_lot_size,
         build_cost_estimate=200_000,
         total_cost_estimate=400_000,
         required_sale_price=480_000,
@@ -405,3 +407,34 @@ class TestDiscoveredZoningDisplay:
 
         assert 'Zoning district: RS' in text
         assert "doesn't say when" not in text
+
+
+class TestWhatYouCanBuild:
+    def _render(self, client, detail, lot=None):
+        analysis = make_logged_in_analysis(client, zoning_detail=detail, property_lot_size=lot)
+        response = client.get(f'/analyses/{analysis.id}')
+        assert response.status_code == 200
+        return _build_restrictions_text(response.data.decode())
+
+    def test_lexington_shows_its_bylaw_numbers(self, client):
+        text = self._render(client, LEXINGTON_DISCOVERED)
+
+        assert 'What you can build: RS (One Family Dwelling)' in text
+        assert 'Front setback' in text and '30 ft' in text
+        assert 'Rear setback' in text
+        assert '2.5 stories / 40 ft' in text
+        assert 'Lexington Zoning Bylaw, Ch. 135' in text
+        assert 'amendments through the 2025 Annual Town Meeting' in text
+
+    def test_new_home_floor_area_uses_this_lot(self, client):
+        text = self._render(client, LEXINGTON_DISCOVERED, lot=14_404)
+
+        assert '5,634 sq ft' in text
+        assert 'On this 14,404 sq ft lot' in text
+
+    def test_uncovered_town_shows_no_numbers(self, client):
+        detail = {**LEXINGTON_DISCOVERED, 'jurisdiction': 'Pittsburgh, PA', 'zoning_code': 'RM-M'}
+
+        text = self._render(client, detail)
+
+        assert 'What you can build' not in text
