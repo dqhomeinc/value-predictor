@@ -91,16 +91,18 @@
           Zoning district: <strong>{{ zd.zoning_code }}</strong>
           {%- if zd.zoning_description %} — {{ zd.zoning_description }}{% endif %}
         </p>
+      {% elif zd.source == 'discovered' %}
+        <p class="zoning-headline muted">No zoning district found for this address.</p>
       {% endif %}
-      {% if zd.source == 'discovered' %}
+      {% if zd.source == 'discovered' and zd.zoning_code %}
         <p class="muted zoning-provenance">
           Found by matching this parcel's location against
           {% if zd.layer_name %}the &ldquo;{{ zd.layer_name }}&rdquo; layer of {% endif %}&ldquo;{{ zd.service_title }}&rdquo;
           {%- if zd.service_owner %}, published on ArcGIS by {{ zd.service_owner }}{% endif %}.
           {% if zd.data_updated %}Its data was last updated {{ zd.data_updated }}.
           {%- elif 'data_updated' in zd %}It doesn't say when its data was last updated.{% endif %}
-          This is the base district only. Overlays, historic designations and floodplain status aren't
-          included, and any of them can independently block a teardown.
+          This is the base district only. Overlays and historic designations aren't included, and
+          either can independently block a teardown.
           {% set ref_url = zd.reference_url | safe_url %}
           {% if ref_url %}<a href="{{ ref_url }}" target="_blank" rel="noopener">View the zoning code</a>.{% endif %}
         </p>
@@ -109,8 +111,8 @@
         {% set critical = restrictions | selectattr('severity', 'equalto', 'critical') | list %}
         {% if critical %}
           <p class="restriction-warning">
-            <strong>This parcel carries designations that can prevent demolition.</strong>
-            Confirm with the city before assuming a teardown is permitted.
+            <strong>This parcel carries designations that can block a teardown or restrict the rebuild.</strong>
+            Confirm with the city before assuming either is permitted.
           </p>
         {% endif %}
         <ul class="restriction-list">
@@ -138,7 +140,11 @@
 
       <ul class="zoning-facts">
         {% if zd.jurisdiction %}<li>Jurisdiction: {{ zd.jurisdiction }}</li>{% endif %}
-        {% if zd.source != 'discovered' %}
+        {% if zd.flood_zone %}
+          <li>FEMA flood zone: {{ zd.flood_zone.zone }}
+            {%- if zd.flood_zone.in_sfha %} — inside the Special Flood Hazard Area
+            {%- elif zd.flood_zone.subtype %} — {{ zd.flood_zone.subtype | lower }}{% endif %}</li>
+        {% elif zd.source != 'discovered' %}
           <li>Floodplain: {{ 'Intersects a mapped floodplain' if zd.in_floodplain else 'Not in a mapped floodplain' }}</li>
         {% endif %}
         {% if zd.case_manager and zd.case_manager.name %}
@@ -156,7 +162,8 @@
         {% endif %}
       </ul>
       <p class="muted restriction-footnote">
-        Which rules apply comes from the city's public GIS. {{ zoning_note }}
+        Which rules apply comes from the jurisdiction's public GIS
+        {%- if zd.flood_zone %} and FEMA's national flood maps{% endif %}. {{ zoning_note }}
       </p>
     {% else %}
       <p class="muted">
