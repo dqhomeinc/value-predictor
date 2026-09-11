@@ -1,6 +1,7 @@
 import pytest
 
 from integrations.municipal_zoning import (
+    DETAIL_VERSION,
     MunicipalZoningResult,
     MunicipalZoningUnavailableError,
     ZoningRestriction,
@@ -471,3 +472,56 @@ class TestRunAnalysisMunicipalZoningFallback:
         assert row.municipal_zoning_code == 'I-RR'
         assert row.municipal_zoning_source == 'austin_gis'
         assert row.municipal_zoning_detail['zoning_code'] == 'I-RR'
+
+
+PITTSBURGH_RM_M = MunicipalZoningResult(
+    zoning_code='RM-M',
+    source='discovered',
+    jurisdiction='Pittsburgh, PA',
+    zoning_description='MULTI-UNIT RESIDENTIAL MODERATE DENSITY',
+)
+
+
+class TestZoningDetailCache:
+    ADDRESS = '5625 Forbes Ave, Pittsburgh, PA 15217'
+    CACHE_KEY = '5625 FORBES AVE, PITTSBURGH, PA 15217'
+
+    def _analyze(self, user, client, lookup):
+        return run_analysis(
+            user=user, address=self.ADDRESS, purchase_price=200_000, cost_per_sqft=100,
+            profit_margin_pct=20, rentcast_client=client, municipal_zoning_lookup=lookup,
+        )
+
+    def _client(self):
+        return make_client([
+            FakeResponse(200, VALUE_ESTIMATE_RESPONSE),
+            FakeResponse(200, PROPERTY_RECORD_RESPONSE),  # zoning: 'R-1'
+        ])
+
+    def test_current_detail_is_served_from_cache(self, app, user):
+        client = self._client()
+        lookup = CountingZoningLookup(PITTSBURGH_RM_M)
+
+        self._analyze(user, client, lookup)
+        second = self._analyze(user, client, lookup)
+
+        assert lookup.calls == 1
+        assert second.property_zoning == 'RM-M'
+        assert second.zoning_detail['detail_version'] == DETAIL_VERSION
+
+    def test_detail_cached_before_the_current_version_is_looked_up_again(self, app, user):
+        # Detail cached before a field was added to it lacks that field.
+        # Serving it forever would hide the new information from exactly
+        # the addresses a user has already looked at.
+        client = self._client()
+        lookup = CountingZoningLookup(PITTSBURGH_RM_M)
+        self._analyze(user, client, lookup)
+
+        row = PropertyLookupCache.query.filter_by(normalized_address=self.CACHE_KEY).first()
+        row.municipal_zoning_detail = {'zoning_code': 'RM-M', 'source': 'discovered', 'restrictions': []}
+        db.session.commit()
+
+        refreshed = self._analyze(user, client, lookup)
+
+        assert lookup.calls == 2
+        assert refreshed.zoning_detail['detail_version'] == DETAIL_VERSION

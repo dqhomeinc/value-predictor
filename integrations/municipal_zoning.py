@@ -114,6 +114,14 @@ class ZoningRestriction:
     url: str = ''
 
 
+# Shape version of MunicipalZoningResult.as_dict(), stored with every cached
+# result. Bump it when the stored detail gains information worth re-fetching
+# for: services/analyzer.py looks up again for any cached detail from an
+# older version rather than serving it forever. 1 is the first versioned
+# shape; detail stored without a version predates it.
+DETAIL_VERSION = 1
+
+
 @dataclass
 class MunicipalZoningResult:
     zoning_code: str
@@ -149,6 +157,7 @@ class MunicipalZoningResult:
             'service_title': self.service_title,
             'service_owner': self.service_owner,
             'reference_url': self.reference_url,
+            'detail_version': DETAIL_VERSION,
             'restrictions': [
                 {'label': r.label, 'detail': r.detail, 'severity': r.severity, 'url': r.url}
                 for r in self.restrictions
