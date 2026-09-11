@@ -9,6 +9,7 @@ import logging
 import os
 
 from integrations.municipal_zoning import (
+    DETAIL_VERSION,
     MunicipalZoningUnavailableError,
     lookup_municipal_zoning,
 )
@@ -156,8 +157,12 @@ def _resolve_zoning(address, rentcast_zoning, municipal_zoning_lookup):
     Returns (zoning_code_or_None, source_or_None, detail_dict_or_None).
     """
     cached = PropertyLookupCache.query.filter_by(normalized_address=normalize_address(address)).first()
-    if cached is not None and cached.municipal_zoning_code:
-        return cached.municipal_zoning_code, cached.municipal_zoning_source, cached.municipal_zoning_detail
+    detail = cached.municipal_zoning_detail if cached is not None else None
+    # Only detail stored at the current shape counts as a cache hit. Older
+    # detail lacks whatever's been added to it since and would otherwise be
+    # served forever, so it's looked up again. These lookups are free.
+    if isinstance(detail, dict) and detail.get('detail_version') == DETAIL_VERSION and cached.municipal_zoning_code:
+        return cached.municipal_zoning_code, cached.municipal_zoning_source, detail
 
     try:
         result = municipal_zoning_lookup(address)
