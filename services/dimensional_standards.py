@@ -4,12 +4,17 @@ house has to stay from each lot line, how tall it can be, the minimum lot,
 and, where the town sets one, how much floor area a new home can have.
 
 Towns write these into their own zoning codes as text, so there's no
-national source to query. The numbers here are checked by hand against
-each town's own code (CURATED below), and the page cites the section and
-says how current it is. Adding a town means reading its code, not wiring
-up a service.
+national source to query. Two sources are used, and the page always says
+which one a number came from and how current it is:
 
-Where a parcel isn't covered, the page keeps the plain-English
+  * Checked by hand against the town's own zoning code (CURATED below).
+    Current and cited to the section, but one town at a time. Adding a
+    town means reading its code, not wiring up a service.
+  * The National Zoning Atlas (integrations/zoning_atlas.py), which has
+    digitized whole states' codes into live map data. Broad, but a
+    snapshot, so its date is always shown and it's labelled as a copy.
+
+Where neither covers a parcel, the page keeps the plain-English
 explanations from services/zoning_guidance.py, which deliberately state
 no numbers at all.
 
@@ -17,6 +22,8 @@ Informational only, like the rest of zoning: never fed into the deal math.
 """
 
 from dataclasses import dataclass
+
+SQFT_PER_ACRE = 43_560
 
 
 @dataclass(frozen=True)
@@ -90,13 +97,27 @@ CURATED = {
 
 def standards_for(detail, lot_sqft=None):
     """
-    Render-ready standards for a stored zoning detail, or None where no
-    source covers it. Applied at render time, so a corrected number
-    reaches past analyses too.
+    Render-ready standards for a stored zoning detail, preferring the
+    town's own code over the Atlas's copy of it. Applied at render time,
+    so a corrected number reaches past analyses too.
     """
     if not isinstance(detail, dict):
         return None
-    return curated_standards(detail.get('jurisdiction'), detail.get('zoning_code'), lot_sqft)
+    curated = curated_standards(detail.get('jurisdiction'), detail.get('zoning_code'), lot_sqft)
+    if curated:
+        return curated
+    atlas = detail.get('atlas_standards')
+    if not isinstance(atlas, dict) or not atlas:
+        return None
+    standards = format_atlas_standards(atlas)
+    town_code = (detail.get('zoning_code') or '').strip()
+    if standards and town_code and standards['district'] and town_code.upper() != standards['district'].upper():
+        # The town's own layer and the Atlas's snapshot can disagree after
+        # a rezoning. Say so rather than quietly showing another district's
+        # numbers under this one's name.
+        standards['caveat'] += (f" It places this parcel in {standards['district']}, while the town's map shows "
+                                f'{town_code}, so these numbers may be for the wrong district.')
+    return standards
 
 
 def curated_standards(jurisdiction, district, lot_sqft=None):
@@ -142,6 +163,71 @@ def _floor_area_rule(bands, lot_sqft):
         return _rule('Max floor area, new home', 'Set by lot size',
                      f'{note} The lot size wasn\'t available to work it out.')
     return _rule('Max floor area, new home', f'{cap:,.0f} sq ft', f'On this {lot_sqft:,.0f} sq ft lot. {note}')
+
+
+_TREATMENT = {
+    'allowed': 'Allowed',
+    'hearing': 'Needs a public hearing',
+    'prohibited': 'Not allowed',
+}
+
+
+def format_atlas_standards(raw):
+    """
+    Render-ready standards from integrations/zoning_atlas.py's normalized
+    values. Anything the Atlas left blank is omitted rather than guessed.
+    """
+    rules = []
+    treatment = _TREATMENT.get(raw.get('single_family'))
+    if treatment:
+        note = ('A rebuild would need the town\'s approval at a hearing.' if raw.get('single_family') == 'hearing'
+                else 'A single-family rebuild isn\'t permitted in this district.' if raw.get('single_family') == 'prohibited'
+                else '')
+        rules.append(_rule('Single-family home', treatment, note))
+    for key, label in (('front_ft', 'Front setback'), ('side_ft', 'Side setback'), ('rear_ft', 'Rear setback')):
+        if raw.get(key) is not None:
+            rules.append(_rule(label, f'{_number(raw[key])} ft', ''))
+
+    height = [f"{_number(raw['max_stories'])} stories"] if raw.get('max_stories') is not None else []
+    if raw.get('max_height_ft') is not None:
+        height.append(f"{_number(raw['max_height_ft'])} ft")
+    if height:
+        rules.append(_rule('Maximum height', ' / '.join(height), ''))
+    if raw.get('max_lot_coverage_pct') is not None:
+        rules.append(_rule('Maximum lot coverage', f"{_number(raw['max_lot_coverage_pct'])}%",
+                           'Share of the lot that buildings can cover.'))
+    if raw.get('max_impervious_pct') is not None:
+        rules.append(_rule('Maximum impervious coverage', f"{_number(raw['max_impervious_pct'])}%",
+                           'Buildings plus driveways, patios and other paving.'))
+    if raw.get('far') is not None:
+        rules.append(_rule('Maximum floor-area ratio', _number(raw['far']), ''))
+
+    lot = _lot_text(raw.get('min_lot_acres'))
+    if lot:
+        frontage = raw.get('frontage_ft')
+        rules.append(_rule('Minimum lot', f'{lot} with {_number(frontage)} ft of frontage' if frontage else lot, ''))
+
+    if not rules:
+        return None
+    source = raw.get('source') or {}
+    return {
+        'kind': 'atlas',
+        'jurisdiction': raw.get('jurisdiction', ''),
+        'district': raw.get('district', ''),
+        'district_name': raw.get('district_name', ''),
+        'rules': rules,
+        'source': source,
+        'caveat': (f"This is the National Zoning Atlas's digitized copy of {raw.get('jurisdiction') or 'the town'}'s "
+                   'zoning code, not the code itself, and the town may have amended it since.'),
+    }
+
+
+def _lot_text(acres):
+    if not isinstance(acres, (int, float)) or acres <= 0:
+        return ''
+    if acres < 1:
+        return f'{acres * SQFT_PER_ACRE:,.0f} sq ft ({_number(acres)} acres)'
+    return f'{_number(acres)} acres'
 
 
 def _jurisdiction_key(label):

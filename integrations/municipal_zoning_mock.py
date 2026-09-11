@@ -102,6 +102,7 @@ def mock_lookup_municipal_zoning(address, session=None):
             layer_name='Zoning' if found_zoning else '',
             data_updated='2024-03-18' if found_zoning else '',
             flood_zone=flood,
+            atlas_standards=_mock_atlas_standards(rng) if found_zoning and rng.random() < 0.5 else {},
         )
 
     restrictions = []
@@ -140,3 +141,18 @@ def mock_lookup_municipal_zoning(address, session=None):
         ordinances=[{'number': f'2010{rng.randint(1000, 9999)}-{rng.randint(10, 99)}', 'url': ''}],
         case_manager={'name': name, 'phone': phone},
     )
+
+
+def _mock_atlas_standards(rng):
+    """Shaped like integrations/zoning_atlas.py's output, so the page's
+    "What you can build" block shows up in local dev."""
+    return {
+        'state': 'TX', 'jurisdiction': 'Mockville', 'district': 'MR-1', 'district_name': 'Mock Residential',
+        'single_family': rng.choice(['allowed', 'allowed', 'hearing']),
+        'min_lot_acres': rng.choice([0.17, 0.25, 0.5]), 'front_ft': rng.choice([20, 25, 30]),
+        'side_ft': rng.choice([8, 10, 15]), 'rear_ft': rng.choice([15, 20, 25]), 'frontage_ft': 75,
+        'max_height_ft': 35, 'max_stories': 2.5, 'max_lot_coverage_pct': rng.choice([None, 30, 35]),
+        'max_impervious_pct': None, 'far': None,
+        'source': {'citation': 'National Zoning Atlas: Mockville (mock data)', 'url': '',
+                   'as_of': 'data last updated 2024-03-18'},
+    }

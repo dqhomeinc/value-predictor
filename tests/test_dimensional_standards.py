@@ -6,6 +6,7 @@ from services.dimensional_standards import (
     CURATED,
     LEXINGTON_NEW_HOME_FLOOR_AREA,
     curated_standards,
+    format_atlas_standards,
     max_floor_area,
     standards_for,
 )
@@ -114,11 +115,64 @@ class TestCuratedLookup:
             assert source['as_of']
 
 
-class TestStandardsFor:
-    def test_uses_the_town_code(self):
-        detail = {'jurisdiction': 'Lexington, MA', 'zoning_code': 'RS'}
+ATLAS_RAW = {
+    'state': 'NH', 'jurisdiction': 'Concord', 'district': 'CVP', 'district_name': 'Civic Performance',
+    'single_family': 'hearing', 'front_ft': 15, 'side_ft': 15, 'rear_ft': 15, 'frontage_ft': 80,
+    'min_lot_acres': None, 'max_height_ft': 45, 'max_stories': None, 'max_lot_coverage_pct': 80, 'far': '1',
+    'source': {'citation': 'National Zoning Atlas: New Hampshire', 'url': 'https://example.org/nh',
+               'as_of': 'data last updated 2024-03-12'},
+}
 
-        assert standards_for(detail, lot_sqft=14_404)['kind'] == 'bylaw'
+
+class TestAtlasFormatting:
+    def test_formats_the_values_present(self):
+        rules = rules_by_label(format_atlas_standards(ATLAS_RAW))
+
+        assert rules['Front setback']['value'] == '15 ft'
+        assert rules['Maximum height']['value'] == '45 ft'
+        assert rules['Maximum lot coverage']['value'] == '80%'
+        assert rules['Maximum floor-area ratio']['value'] == '1'
+        assert rules['Single-family home']['value'] == 'Needs a public hearing'
+
+    def test_blank_values_are_omitted_not_guessed(self):
+        rules = rules_by_label(format_atlas_standards(ATLAS_RAW))
+
+        assert 'Minimum lot' not in rules  # min_lot_acres is None
+
+    def test_acres_under_one_also_shows_square_feet(self):
+        rules = rules_by_label(format_atlas_standards({**ATLAS_RAW, 'min_lot_acres': 0.17}))
+
+        assert rules['Minimum lot']['value'] == '7,405 sq ft (0.17 acres) with 80 ft of frontage'
+
+    def test_prohibited_says_a_rebuild_is_not_permitted(self):
+        rules = rules_by_label(format_atlas_standards({**ATLAS_RAW, 'single_family': 'prohibited'}))
+
+        assert rules['Single-family home']['value'] == 'Not allowed'
+        assert "isn't permitted" in rules['Single-family home']['note']
+
+    def test_is_labelled_as_a_copy_with_its_date(self):
+        standards = format_atlas_standards(ATLAS_RAW)
+
+        assert standards['kind'] == 'atlas'
+        assert 'digitized copy' in standards['caveat']
+        assert standards['source']['as_of'] == 'data last updated 2024-03-12'
+
+    def test_nothing_usable_is_none(self):
+        empty = {key: None for key in ATLAS_RAW if key not in ('source', 'jurisdiction')}
+
+        assert format_atlas_standards({**empty, 'source': {}}) is None
+
+
+class TestStandardsFor:
+    def test_prefers_the_town_code_over_the_atlas(self):
+        detail = {'jurisdiction': 'Lexington, MA', 'zoning_code': 'RS', 'atlas_standards': ATLAS_RAW}
+
+        assert standards_for(detail)['kind'] == 'bylaw'
+
+    def test_uses_the_atlas_when_the_town_is_not_curated(self):
+        detail = {'jurisdiction': 'Concord, NH', 'zoning_code': '', 'atlas_standards': ATLAS_RAW}
+
+        assert standards_for(detail)['kind'] == 'atlas'
 
     @pytest.mark.parametrize('detail', [None, 'junk', {}, {'jurisdiction': 'Pittsburgh, PA', 'zoning_code': 'RM-M'}])
     def test_none_when_nothing_covers_it(self, detail):
