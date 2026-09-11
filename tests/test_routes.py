@@ -1,4 +1,5 @@
 import os
+import re
 
 import pytest
 
@@ -315,3 +316,61 @@ class TestZoningLinkSchemes:
         assert 'https://example.gov/ord' in html
         assert 'Local Historic Districts' in html
         assert '123' in html
+
+
+def _build_restrictions_text(html):
+    start = html.find('<h3>Build restrictions</h3>')
+    section = html[start:html.find('</section>', start)]
+    text = re.sub(r'<[^>]+>', ' ', section)
+    text = text.replace('&ldquo;', '"').replace('&rdquo;', '"').replace('&#39;', "'")
+    return ' '.join(text.split())
+
+
+# The Lexington, MA result that reached production: a code, no description,
+# from a layer published by a personal account.
+LEXINGTON_DISCOVERED = {
+    'zoning_code': 'RS', 'source': 'discovered', 'jurisdiction': 'Lexington, MA',
+    'in_floodplain': False, 'ordinances': [], 'case_manager': {}, 'zoning_description': '',
+    'provenance': 'unverified', 'service_title': 'TownOwnedParcels', 'service_owner': 'jBaldasaro',
+    'reference_url': '', 'layer_name': 'ZONING', 'data_updated': '2022-05-11',
+    'detail_version': 2, 'restrictions': [],
+}
+
+
+class TestDiscoveredZoningDisplay:
+    def _render(self, client, detail):
+        analysis = make_logged_in_analysis(client, zoning_detail=detail)
+        response = client.get(f'/analyses/{analysis.id}')
+        assert response.status_code == 200
+        return _build_restrictions_text(response.data.decode())
+
+    def test_shows_the_district_even_without_a_description(self, client):
+        # The section used to show only caveats when a layer carried a code
+        # but no plain-English description, so it read as "found something,
+        # won't say what".
+        text = self._render(client, LEXINGTON_DISCOVERED)
+
+        assert 'Zoning district: RS' in text
+
+    def test_reports_what_was_verified_rather_than_an_officialness_claim(self, client):
+        # Account names can't establish who's official: `lexingtonGIS`
+        # published Minnesota data. What's knowable is which layer matched
+        # the parcel and when its data was last updated.
+        text = self._render(client, LEXINGTON_DISCOVERED)
+
+        assert "couldn't automatically confirm" not in text
+        assert 'official' not in text.lower()
+        assert '"ZONING" layer of "TownOwnedParcels"' in text
+        assert 'published on ArcGIS by jBaldasaro' in text
+        assert 'last updated 2022-05-11' in text
+
+    def test_detail_saved_before_these_fields_still_renders(self, client):
+        # Analyses saved earlier keep their stored detail. The page has to
+        # render it without inventing facts it never recorded.
+        old = {key: value for key, value in LEXINGTON_DISCOVERED.items()
+               if key not in ('layer_name', 'data_updated', 'detail_version')}
+
+        text = self._render(client, old)
+
+        assert 'Zoning district: RS' in text
+        assert "doesn't say when" not in text

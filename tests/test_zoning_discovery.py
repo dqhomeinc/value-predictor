@@ -247,3 +247,50 @@ class TestDiscoverZoning:
 
         with pytest.raises(ZoningDiscoveryError):
             discover_zoning('5625 Forbes Ave, Pittsburgh, PA', session=session)
+
+
+MATCHED_LAYER_SEARCH = {'results': [{
+    'title': 'Pittsburgh Zoning', 'owner': 'pittsburgh_admin', 'snippet': '',
+    'url': 'https://services1.arcgis.com/abc/arcgis/rest/services/zoning/FeatureServer',
+}]}
+
+
+class TestMatchedLayerFacts:
+    def _session(self, layer_meta):
+        # The first matching URL fragment wins: the layer-metadata URL
+        # (.../FeatureServer/0) must be caught before the service-root route.
+        return FakeSession({
+            'geocoding.geo.census.gov': CENSUS_MATCH,
+            'arcgis.com/sharing/rest/search': MATCHED_LAYER_SEARCH,
+            '/FeatureServer/0/query': {'features': [{'attributes': {'ZON_NEW': 'RM-M'}}]},
+            'FeatureServer/0': layer_meta,
+            '/FeatureServer': {'layers': [{'id': 0, 'name': 'Zoning Districts', 'geometryType': 'esriGeometryPolygon'}]},
+        })
+
+    def test_records_the_matched_layer_and_its_data_date(self):
+        session = self._session({'editingInfo': {'dataLastEditDate': 1652227200000}})
+
+        result = discover_zoning('5625 Forbes Ave, Pittsburgh, PA', session=session)
+
+        assert result.layer_name == 'Zoning Districts'
+        assert result.data_updated == '2022-05-11'
+
+    def test_falls_back_to_the_layer_last_edit_date(self):
+        session = self._session({'editingInfo': {'lastEditDate': 1443744000000}})
+
+        result = discover_zoning('5625 Forbes Ave, Pittsburgh, PA', session=session)
+
+        assert result.data_updated == '2015-10-02'
+
+    @pytest.mark.parametrize('layer_meta', [
+        {},
+        {'editingInfo': {}},
+        {'editingInfo': {'dataLastEditDate': 'soon'}},
+        {'editingInfo': {'dataLastEditDate': True}},
+        {'editingInfo': 'not a dict'},
+    ])
+    def test_missing_or_odd_dates_are_blank_not_errors(self, layer_meta):
+        result = discover_zoning('5625 Forbes Ave, Pittsburgh, PA', session=self._session(layer_meta))
+
+        assert result.zoning_code == 'RM-M'
+        assert result.data_updated == ''

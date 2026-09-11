@@ -87,6 +87,8 @@ def mock_lookup_municipal_zoning(address, session=None):
             provenance=OFFICIAL if rng.random() < 0.4 else UNVERIFIED,
             service_title='Mockville Zoning Districts',
             service_owner='mockville.gis' if rng.random() < 0.4 else 'someconsultant_corp',
+            layer_name='Zoning',
+            data_updated='2024-03-18',
         )
 
     restrictions = []

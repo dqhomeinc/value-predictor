@@ -2,6 +2,7 @@ import pytest
 import requests
 
 from integrations.municipal_zoning import (
+    DETAIL_VERSION,
     MunicipalZoningUnavailableError,
     lookup_municipal_zoning,
     safe_external_url,
@@ -299,3 +300,56 @@ class TestSafeExternalUrl:
         result = lookup_municipal_zoning('4100 Avenue G, Austin, TX', session=session)
 
         assert result.ordinances == [{'number': '20101216-093', 'url': ''}]
+
+
+CENSUS_PITTSBURGH = {
+    'result': {'addressMatches': [{
+        'matchedAddress': '5625 FORBES AVE, PITTSBURGH, PA, 15217',
+        'coordinates': {'x': -79.9272, 'y': 40.4381},
+        'geographies': {
+            'Incorporated Places': [{'NAME': 'Pittsburgh city'}],
+            'Counties': [{'NAME': 'Allegheny County'}],
+            'States': [{'STUSAB': 'PA'}],
+        },
+    }]},
+}
+PITTSBURGH_SEARCH = {'results': [{
+    'title': 'Pittsburgh Zoning', 'owner': 'pgh_gis', 'snippet': '',
+    'url': 'https://example.arcgis.com/zoning/FeatureServer',
+}]}
+
+
+def discovery_session(overrides=None):
+    """Routes for the nationwide path: Census geocode, ArcGIS search, and
+    the matched zoning layer and its edit date. The first matching URL
+    fragment wins, so the layer-metadata route has to sit between the
+    query route and the service-root route."""
+    routes = {
+        'geocoding.geo.census.gov': CENSUS_PITTSBURGH,
+        'arcgis.com/sharing/rest/search': PITTSBURGH_SEARCH,
+        '/FeatureServer/0/query': {'features': [{'attributes': {
+            'ZON_NEW': 'RM-M', 'Full_Zoning_Type': 'MULTI-UNIT RESIDENTIAL MODERATE DENSITY'}}]},
+        'FeatureServer/0': {'name': 'Zoning', 'editingInfo': {'dataLastEditDate': 1652227200000}},
+        '/FeatureServer': {'layers': [{'id': 0, 'name': 'Zoning', 'geometryType': 'esriGeometryPolygon'}]},
+    }
+    routes.update(overrides or {})
+    return FakeSession(routes)
+
+
+class TestDiscoveredProvenance:
+    ADDRESS = '5625 Forbes Ave, Pittsburgh, PA 15217'
+
+    def test_records_what_was_matched_and_when_its_data_was_updated(self):
+        result = lookup_municipal_zoning(self.ADDRESS, session=discovery_session())
+
+        assert result.source == 'discovered'
+        assert result.zoning_code == 'RM-M'
+        assert result.layer_name == 'Zoning'
+        assert result.data_updated == '2022-05-11'
+
+    def test_stored_detail_carries_them_and_the_current_version(self):
+        detail = lookup_municipal_zoning(self.ADDRESS, session=discovery_session()).as_dict()
+
+        assert detail['layer_name'] == 'Zoning'
+        assert detail['data_updated'] == '2022-05-11'
+        assert detail['detail_version'] == DETAIL_VERSION
