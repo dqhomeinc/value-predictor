@@ -1,10 +1,12 @@
 import os
 import re
 
+import anthropic
 import pytest
 
 from app import create_app
-from models import Analysis, User, db
+from models import Analysis, BuildLimitsLookup, User, db
+from services.build_limits_search import MockLimitsClient
 
 
 @pytest.fixture(scope='module')
@@ -475,3 +477,159 @@ class TestWhatYouCanBuild:
         html = client.get(f'/analyses/{analysis.id}').data.decode()
 
         assert 'href="javascript:' not in html
+
+
+PITTSBURGH_DISCOVERED = {**LEXINGTON_DISCOVERED, 'jurisdiction': 'Pittsburgh, PA', 'zoning_code': 'RM-M',
+                         'service_title': 'Pittsburgh Zoning', 'service_owner': 'pgh_gis'}
+
+
+class FakeAPIError(anthropic.APIError):
+    """An API failure without the HTTP request the SDK's own constructors need."""
+
+    def __init__(self):
+        self.message = 'Claude is unavailable'
+        Exception.__init__(self, self.message)
+
+
+class SpyLimitsClient(MockLimitsClient):
+    def __init__(self, error=None):
+        super().__init__()
+        self.error = error
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error:
+            raise self.error
+        return super().create(**kwargs)
+
+
+@pytest.fixture
+def limits_client(monkeypatch):
+    spy = SpyLimitsClient()
+    monkeypatch.setattr('blueprints.main.build_limits_client', lambda: spy)
+    monkeypatch.setattr('blueprints.main.limits_configured', lambda: True)
+    return spy
+
+
+class TestOnDemandBuildLimits:
+    def _page(self, client, analysis):
+        return _build_restrictions_text(client.get(f'/analyses/{analysis.id}').data.decode())
+
+    def _search(self, client, analysis):
+        return client.post(f'/analyses/{analysis.id}/build-limits', follow_redirects=True)
+
+    def test_uncovered_district_offers_a_search(self, client, limits_client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        text = self._page(client, analysis)
+
+        assert "for district RM-M in Pittsburgh, PA aren't on file yet" in text
+        assert 'Find exact limits' in text
+        assert limits_client.calls == []  # showing the offer costs nothing
+
+    def test_hand_checked_town_needs_no_search(self, client, limits_client):
+        analysis = make_logged_in_analysis(client, zoning_detail=LEXINGTON_DISCOVERED)
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        assert 'id="build-limits-form"' not in html
+
+    def test_search_shows_only_quote_checked_limits(self, client, limits_client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        response = self._search(client, analysis)
+
+        assert response.status_code == 200
+        text = _build_restrictions_text(response.data.decode())
+        assert 'What you can build: RM-M' in text
+        assert 'Front setback' in text and '25 ft' in text
+        assert 'Minimum front yard: 25 feet' in text
+        assert 'Maximum stories' not in text  # its quote isn't on the page, so it was dropped
+        assert "1 other value it reported didn't match its source" in text
+        assert 'Find exact limits' not in text
+        assert 'href="https://example.com/mockville-zoning-code"' in response.data.decode()
+        row = BuildLimitsLookup.query.one()
+        assert (row.jurisdiction, row.district, row.status) == ('Pittsburgh, PA', 'RM-M', 'found')
+        assert '"RM-M" zoning district' in limits_client.calls[0]['system']
+
+    def test_result_is_shared_by_later_analyses_in_the_district(self, client, limits_client):
+        first = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        self._search(client, first)
+        second = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        assert 'What you can build: RM-M' in self._page(client, second)
+        self._search(client, second)
+        assert len(limits_client.calls) == 1
+
+    def test_daily_limit(self, client, limits_client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.daily_search_limit', lambda: 0)
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        html = self._search(client, analysis).data.decode()
+
+        assert 'limit of 0 searches a day' in html
+        assert limits_client.calls == []
+        assert BuildLimitsLookup.query.count() == 0
+
+    def test_failed_search_can_be_retried(self, client, monkeypatch):
+        failing = SpyLimitsClient(error=FakeAPIError())
+        monkeypatch.setattr('blueprints.main.build_limits_client', lambda: failing)
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        html = self._search(client, analysis).data.decode()
+
+        assert "The search didn&#39;t finish" in html or "The search didn't finish" in html
+        assert BuildLimitsLookup.query.one().status == 'failed'
+        assert 'Find exact limits' in _build_restrictions_text(html)
+
+    def test_not_found_is_explained_with_a_retry(self, client, limits_client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        db.session.add(BuildLimitsLookup(jurisdiction='Pittsburgh, PA', district='RM-M', status='not_found',
+                                         notes='The code is only published as scanned images.'))
+        db.session.commit()
+
+        text = self._page(client, analysis)
+
+        assert "couldn't find limits for district RM-M" in text
+        assert 'The code is only published as scanned images.' in text
+        assert 'Search again' in text
+
+    def test_not_set_up(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.build_limits_client', lambda: None)
+        monkeypatch.setattr('blueprints.main.limits_configured', lambda: False)
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        text = self._page(client, analysis)
+        assert "isn't set up on this server yet" in text
+        assert 'Find exact limits' not in text
+        html = self._search(client, analysis).data.decode()
+        assert 'set up on this server yet' in html
+        assert BuildLimitsLookup.query.count() == 0
+
+    def test_nothing_to_search_without_a_district(self, client, limits_client):
+        detail = {**PITTSBURGH_DISCOVERED, 'zoning_code': ''}
+        analysis = make_logged_in_analysis(client, zoning_detail=detail)
+
+        assert 'id="build-limits-form"' not in client.get(f'/analyses/{analysis.id}').data.decode()
+        self._search(client, analysis)
+        assert limits_client.calls == []
+
+    def test_hostile_urls_in_a_saved_result_are_not_linked(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        db.session.add(BuildLimitsLookup(
+            jurisdiction='Pittsburgh, PA', district='RM-M', status='found', code_url='javascript:alert(1)',
+            limits=[{'key': 'front_setback', 'value': 25, 'unit': 'ft', 'quote': 'Minimum front yard: 25 feet',
+                     'source_url': 'javascript:alert(2)', 'section': ''}]))
+        db.session.commit()
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        assert 'What you can build' in html
+        assert 'href="javascript:' not in html
+
+    def test_requires_login(self, client, limits_client):
+        response = client.post('/analyses/1/build-limits')
+
+        assert response.status_code in (302, 401)
+        assert limits_client.calls == []

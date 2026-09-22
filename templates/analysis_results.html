@@ -82,7 +82,7 @@
     </ul>
   </section>
 
-  <section>
+  <section id="build-restrictions">
     <h3>Build restrictions</h3>
     {% if analysis.zoning_detail %}
       {% set zd = analysis.zoning_detail %}
@@ -115,7 +115,13 @@
             <tbody>
               {% for rule in standards.rules %}
                 <tr>
-                  <td>{{ rule.label }}{% if rule.note %}<div class="standards-note">{{ rule.note }}</div>{% endif %}</td>
+                  <td>
+                    {{ rule.label }}
+                    {% set rule_url = rule.source_url | safe_url %}
+                    {% if rule.note or rule_url %}
+                      <div class="standards-note">{{ rule.note }}{% if rule_url %} <a href="{{ rule_url }}" target="_blank" rel="noopener">Source</a>{% endif %}</div>
+                    {% endif %}
+                  </td>
                   <td>{{ rule.value }}</td>
                 </tr>
               {% endfor %}
@@ -206,6 +212,38 @@
         overlays, and any historic designation before assuming a rebuild is permitted.
       </p>
     {% endif %}
+    {% if limits_search %}
+      <div class="limits-search">
+        {% set previous = limits_search.previous %}
+        {% if previous %}
+          <p>
+            An AI search of {{ limits_search.jurisdiction }}'s zoning code
+            {%- if previous.created_at %} on {{ previous.created_at.strftime('%Y-%m-%d') }}{% endif %} couldn't find
+            limits for district <strong>{{ limits_search.district }}</strong> that it could check against their source.
+            {% if previous.notes %}{{ previous.notes }}{% endif %}
+          </p>
+        {% else %}
+          <p>
+            Exact limits (setbacks, height, lot coverage) for district <strong>{{ limits_search.district }}</strong>
+            in {{ limits_search.jurisdiction }} aren't on file yet.
+          </p>
+        {% endif %}
+        {% if limits_search.available %}
+          <form method="post" action="{{ url_for('main.search_build_limits', analysis_id=analysis.id) }}"
+                id="build-limits-form" class="limits-search-form" data-jurisdiction="{{ limits_search.jurisdiction }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit">{{ 'Search again' if previous else 'Find exact limits' }}</button>
+            <span class="muted limits-search-hint">
+              Claude searches the town's zoning code and shows only numbers it can quote from the source.
+              Takes up to a minute.
+              {% if limits_search.mock %}<strong>Local dev:</strong> results are mock data.{% endif %}
+            </span>
+          </form>
+        {% else %}
+          <p class="muted">Searching for exact limits isn't set up on this server yet.</p>
+        {% endif %}
+      </div>
+    {% endif %}
   </section>
 
   <section>
@@ -267,4 +305,5 @@
       'marketValueEstimate': analysis.market_value_estimate,
     } | tojson }}</script>
   <script src="{{ url_for('static', filename='results.js') }}"></script>
+  <script src="{{ url_for('static', filename='build-limits.js') }}"></script>
 {% endblock %}

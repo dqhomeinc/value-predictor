@@ -592,3 +592,35 @@ table td:last-child {
   margin: 8px 0 0;
   font-size: 12px;
 }
+
+.limits-search {
+  margin-top: 16px;
+  padding: 14px 16px;
+  background: var(--surface-alt);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+
+.limits-search p {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.limits-search-form {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 0;
+}
+
+.limits-search-hint {
+  flex: 1;
+  min-width: 200px;
+  font-size: 12px;
+}
+
+.limits-search-form button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
