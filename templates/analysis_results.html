@@ -82,7 +82,7 @@
     </ul>
   </section>
 
-  <section>
+  <section id="build-restrictions">
     <h3>Build restrictions</h3>
     {% if analysis.zoning_detail %}
       {% set zd = analysis.zoning_detail %}
@@ -115,7 +115,13 @@
             <tbody>
               {% for rule in standards.rules %}
                 <tr>
-                  <td>{{ rule.label }}{% if rule.note %}<div class="standards-note">{{ rule.note }}</div>{% endif %}</td>
+                  <td>
+                    {{ rule.label }}
+                    {% set rule_url = rule.source_url | safe_url %}
+                    {% if rule.note or rule_url %}
+                      <div class="standards-note">{{ rule.note }}{% if rule_url %} <a href="{{ rule_url }}" target="_blank" rel="noopener">Source</a>{% endif %}</div>
+                    {% endif %}
+                  </td>
                   <td>{{ rule.value }}</td>
                 </tr>
               {% endfor %}

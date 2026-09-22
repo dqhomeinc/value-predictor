@@ -4,7 +4,7 @@ import re
 import pytest
 
 from app import create_app
-from models import Analysis, User, db
+from models import Analysis, BuildLimitsLookup, User, db
 
 
 @pytest.fixture(scope='module')
@@ -475,3 +475,84 @@ class TestWhatYouCanBuild:
         html = client.get(f'/analyses/{analysis.id}').data.decode()
 
         assert 'href="javascript:' not in html
+
+
+PITTSBURGH_DISCOVERED = {**LEXINGTON_DISCOVERED, 'jurisdiction': 'Pittsburgh, PA', 'zoning_code': 'RM-M',
+                         'service_title': 'Pittsburgh Zoning', 'service_owner': 'pgh_gis'}
+PITTSBURGH_CODE_URL = 'https://library.municode.com/pa/pittsburgh/zoning'
+
+
+def save_limits(**overrides):
+    fields = {
+        'jurisdiction': 'Pittsburgh, PA', 'district': 'RM-M', 'status': 'found',
+        'code_title': 'Pittsburgh Zoning Code', 'code_url': PITTSBURGH_CODE_URL,
+        'limits': [{'key': 'front_setback', 'value': 25, 'unit': 'ft', 'quote': 'Minimum front yard: 25 feet',
+                    'source_url': PITTSBURGH_CODE_URL, 'section': 'Table 4.1'}],
+        'dropped': [{'key': 'max_stories', 'value': 3, 'reason': 'quote not found on the page it cites'}],
+    }
+    fields.update(overrides)
+    row = BuildLimitsLookup(**fields)
+    db.session.add(row)
+    db.session.commit()
+    return row
+
+
+class TestSavedBuildLimitsOnThePage:
+    def test_shows_the_limits_with_their_quotes_and_sources(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        save_limits()
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        text = _build_restrictions_text(html)
+        assert 'What you can build: RM-M' in text
+        assert 'Front setback' in text and '25 ft' in text
+        assert 'Minimum front yard: 25 feet' in text
+        assert 'Pittsburgh Zoning Code' in text
+        assert 'searched ' in text
+        assert "1 other value it reported didn't match its source" in text
+        assert f'href="{PITTSBURGH_CODE_URL}"' in html
+
+    def test_every_analysis_in_the_district_shows_it(self, client):
+        save_limits()
+        first = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        second = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        for analysis in (first, second):
+            assert 'What you can build: RM-M' in self._text(client, analysis)
+
+    def test_a_different_district_is_not_borrowed(self, client):
+        save_limits()
+        analysis = make_logged_in_analysis(client, zoning_detail={**PITTSBURGH_DISCOVERED, 'zoning_code': 'R1A'})
+
+        assert 'What you can build' not in self._text(client, analysis)
+
+    def test_a_search_that_found_nothing_shows_nothing(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        save_limits(status='not_found', limits=None)
+
+        assert 'What you can build' not in self._text(client, analysis)
+
+    def test_hand_checked_towns_still_win(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=LEXINGTON_DISCOVERED)
+        save_limits(jurisdiction='Lexington, MA', district='RS')
+
+        text = self._text(client, analysis)
+
+        assert 'Lexington Zoning Bylaw, Ch. 135' in text
+        assert 'Minimum front yard: 25 feet' not in text
+
+    def test_hostile_urls_in_a_saved_row_are_not_linked(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        save_limits(code_url='javascript:alert(1)',
+                    limits=[{'key': 'front_setback', 'value': 25, 'unit': 'ft',
+                             'quote': 'Minimum front yard: 25 feet', 'source_url': 'javascript:alert(2)',
+                             'section': ''}])
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        assert 'What you can build' in html
+        assert 'href="javascript:' not in html
+
+    def _text(self, client, analysis):
+        return _build_restrictions_text(client.get(f'/analyses/{analysis.id}').data.decode())

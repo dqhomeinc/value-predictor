@@ -14,6 +14,7 @@ from services.analyzer import (
     rentcast_mock_enabled,
     run_analysis,
 )
+from services.build_limits_search import latest_lookup, limits_key, lookup_standards
 from services.dimensional_standards import standards_for
 from services.market_value import MarketValueUnavailableError
 from services.zoning_guidance import GENERIC_NOTE, annotate
@@ -144,5 +145,18 @@ def analysis_detail(analysis_id):
         restrictions=restrictions,
         zoning_note=GENERIC_NOTE,
         supported_jurisdictions=SUPPORTED_JURISDICTIONS,
-        standards=standards_for(analysis.zoning_detail, analysis.property_lot_size),
+        standards=standards_for(analysis.zoning_detail, analysis.property_lot_size)
+        or _saved_build_limits(analysis),
     )
+
+
+def _saved_build_limits(analysis):
+    """
+    A saved on-demand search for this analysis's district, as a standards
+    table (services/build_limits_search.py), or None when none found any.
+    """
+    key = limits_key(analysis)
+    if key is None:
+        return None
+    lookup = latest_lookup(*key)
+    return lookup_standards(lookup) if lookup is not None and lookup.status == 'found' else None
