@@ -475,3 +475,109 @@ class TestWhatYouCanBuild:
         html = client.get(f'/analyses/{analysis.id}').data.decode()
 
         assert 'href="javascript:' not in html
+
+
+def add_analysis(address, user_id):
+    analysis = Analysis(user_id=user_id, address=address, purchase_price=1, initial_cost_per_sqft=1,
+                        initial_profit_margin_pct=1)
+    db.session.add(analysis)
+    db.session.commit()
+    return analysis
+
+
+class TestAddressSuggestions:
+    def _suggest(self, client, query):
+        return client.get('/addresses/suggest', query_string={'q': query})
+
+    def test_requires_login(self, client):
+        assert self._suggest(client, '28 Lillian').status_code in (302, 401)
+
+    def test_short_query_asks_the_provider_nothing(self, client, monkeypatch):
+        asked = []
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query: asked.append(query) or [])
+        make_logged_in_analysis(client)
+
+        response = self._suggest(client, 'Ma')
+
+        assert response.status_code == 200
+        assert response.get_json() == {'suggestions': []}
+        assert asked == []
+
+    def test_offers_photon_matches(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses',
+                            lambda query: ['28 Lillian Road, Lexington, MA', '30 Lillian Road, Lexington, MA'])
+        make_logged_in_analysis(client)
+
+        suggestions = self._suggest(client, '28 Lillian').get_json()['suggestions']
+
+        assert suggestions == [{'address': '28 Lillian Road, Lexington, MA', 'source': 'photon'},
+                               {'address': '30 Lillian Road, Lexington, MA', 'source': 'photon'}]
+
+    def test_your_own_past_addresses_come_first(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query: ['28 Lillian Road, Lexington, MA'])
+        analysis = make_logged_in_analysis(client)  # 123 Main St, Austin, TX
+        add_analysis('9 Lillian Rd, Lexington, MA', analysis.user_id)
+
+        suggestions = self._suggest(client, 'Lillian').get_json()['suggestions']
+
+        assert suggestions[0] == {'address': '9 Lillian Rd, Lexington, MA', 'source': 'history'}
+        assert suggestions[1]['source'] == 'photon'
+
+    def test_an_address_already_analyzed_is_not_listed_twice(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query: ['28 Lillian RD, Lexington, MA'])
+        analysis = make_logged_in_analysis(client)
+        add_analysis('28 Lillian Rd, Lexington, MA', analysis.user_id)
+
+        suggestions = self._suggest(client, 'Lillian').get_json()['suggestions']
+
+        assert suggestions == [{'address': '28 Lillian Rd, Lexington, MA', 'source': 'history'}]
+
+    def test_only_your_own_past_addresses(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query: [])
+        make_logged_in_analysis(client)
+        other = User(username='other', email='other@example.com', password_hash='x')
+        db.session.add(other)
+        db.session.commit()
+        add_analysis('28 Lillian Rd, Lexington, MA', other.id)
+
+        assert self._suggest(client, 'Lillian').get_json() == {'suggestions': []}
+
+    def test_a_provider_outage_still_offers_past_addresses(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query: [])
+        analysis = make_logged_in_analysis(client)
+        add_analysis('28 Lillian Rd, Lexington, MA', analysis.user_id)
+
+        suggestions = self._suggest(client, 'Lillian').get_json()['suggestions']
+
+        assert suggestions == [{'address': '28 Lillian Rd, Lexington, MA', 'source': 'history'}]
+
+    def test_wildcards_in_the_query_match_literally(self, client, monkeypatch):
+        # Unescaped, '%' would turn the search into "anything at all".
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query: [])
+        analysis = make_logged_in_analysis(client)
+        add_analysis('12 Abbey Rd, Austin, TX', analysis.user_id)
+
+        assert self._suggest(client, 'a%y').get_json() == {'suggestions': []}
+        assert self._suggest(client, 'Abbey').get_json()['suggestions'][0]['address'] == '12 Abbey Rd, Austin, TX'
+
+    def test_at_most_six_suggestions(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses',
+                            lambda query: [f'{n} Lillian Road, Lexington, MA' for n in range(20, 30)])
+        analysis = make_logged_in_analysis(client)
+        for number in (1, 2, 3, 4):
+            add_analysis(f'{number} Lillian Rd, Lexington, MA', analysis.user_id)
+
+        suggestions = self._suggest(client, 'Lillian').get_json()['suggestions']
+
+        assert len(suggestions) == 6
+        assert [item['source'] for item in suggestions[:3]] == ['history'] * 3  # at most three of your own
+
+    def test_the_form_offers_the_suggestion_box(self, client):
+        make_logged_in_analysis(client)
+
+        html = client.get('/').data.decode()
+
+        assert 'id="address-suggestions"' in html
+        assert 'role="combobox"' in html
+        assert 'address-autocomplete.js' in html
+        assert 'data-suggest-url="/addresses/suggest"' in html

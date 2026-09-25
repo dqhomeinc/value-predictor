@@ -592,3 +592,56 @@ table td:last-child {
   margin: 8px 0 0;
   font-size: 12px;
 }
+
+.address-field {
+  position: relative;
+}
+
+.address-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.address-suggestions {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin: 4px 0 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.address-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  font-size: 14px;
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.address-suggestion[aria-selected='true'],
+.address-suggestion:hover {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+}
+
+.address-suggestion-tag {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}

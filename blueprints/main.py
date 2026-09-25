@@ -4,6 +4,7 @@ import os
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from integrations.address_suggest import MIN_QUERY_CHARS, normalized, suggest_addresses
 from integrations.municipal_zoning import SUPPORTED_JURISDICTIONS, safe_external_url
 from integrations.rentcast import RentCastError
 from models import Analysis
@@ -146,3 +147,60 @@ def analysis_detail(analysis_id):
         supported_jurisdictions=SUPPORTED_JURISDICTIONS,
         standards=standards_for(analysis.zoning_detail, analysis.property_lot_size),
     )
+
+
+# A few of each: enough to pick from without burying the one you want.
+PAST_ADDRESS_SUGGESTIONS = 3
+TOTAL_ADDRESS_SUGGESTIONS = 6
+
+
+@main_bp.route('/addresses/suggest')
+@login_required
+def suggest_address():
+    """
+    Address suggestions for the analyze form, as JSON. The user's own
+    past addresses come first (free, instant, and usually what they're
+    reaching for), then Photon's (integrations/address_suggest.py).
+
+    Always answers with a list: if the provider is down or slow, the
+    past addresses still show and the field still accepts typing.
+    """
+    query = ' '.join(request.args.get('q', '').split())
+    if len(query) < MIN_QUERY_CHARS:
+        return jsonify(suggestions=[])
+
+    suggestions = [{'address': address, 'source': 'history'} for address in _past_addresses(query)]
+    seen = {normalized(item['address']) for item in suggestions}
+    for address in suggest_addresses(query):
+        if normalized(address) in seen:
+            continue
+        seen.add(normalized(address))
+        suggestions.append({'address': address, 'source': 'photon'})
+    return jsonify(suggestions=suggestions[:TOTAL_ADDRESS_SUGGESTIONS])
+
+
+def _past_addresses(query, limit=PAST_ADDRESS_SUGGESTIONS):
+    """This user's previously analyzed addresses containing what they've typed."""
+    text = ' '.join(query.split())
+    if len(text) < MIN_QUERY_CHARS:
+        return []
+    # LIKE wildcards in the query would match far more than what was
+    # typed, so they're escaped rather than passed through.
+    escaped = text.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    rows = (
+        Analysis.query
+        .filter(Analysis.user_id == current_user.id, Analysis.address.ilike(f'%{escaped}%', escape='\\'))
+        .order_by(Analysis.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    addresses, seen = [], set()
+    for row in rows:
+        key = normalized(row.address)
+        if key in seen:
+            continue
+        seen.add(key)
+        addresses.append(row.address)
+        if len(addresses) == limit:
+            break
+    return addresses
