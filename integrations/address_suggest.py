@@ -36,7 +36,8 @@ already looked up; only new lookups are refused.
 
 The limit is per process and in memory: enough to stop a stuck page or a
 script from cycling through queries, not a defence against a determined
-attacker, which would need shared state across workers.
+attacker, which would need shared state across workers. Callers are
+remembered while their lookups are recent and swept once they go quiet.
 
 Never raises: no answer is an empty list, and the form still works.
 """
@@ -64,10 +65,14 @@ CACHE_ENTRIES = 200
 LOOKUPS_PER_MINUTE = 30       # per caller
 TOTAL_LOOKUPS_PER_MINUTE = 120  # everyone together, out of courtesy to Photon
 RATE_WINDOW_SECONDS = 60
-# Callers are remembered only while their lookups are recent. Past this
-# many, the ones that have gone quiet are forgotten, so a long-running
-# process doesn't keep an entry for everyone who ever typed an address.
-MAX_TRACKED_CALLERS = 256
+# How many remembered callers it takes to trigger a sweep of the ones
+# that have gone quiet, so a long-running process doesn't keep an entry
+# for everyone who ever typed an address. Not a cap on the table: only
+# callers with nothing left inside the window are dropped, and while
+# more than this many are genuinely active the table is larger. Evicting
+# an active caller would forget their recent lookups and hand them a
+# fresh allowance, which is the one thing this must not do.
+SWEEP_AFTER_CALLERS = 256
 
 # Photon returns the state spelled out; everything downstream parses
 # "City, ST".
@@ -138,7 +143,7 @@ def _lookup_allowed(client, now=None):
     now = time.monotonic() if now is None else now
     caller = client if client is not None else 'anonymous'
     with _lock:
-        if len(_lookups) > MAX_TRACKED_CALLERS:
+        if len(_lookups) > SWEEP_AFTER_CALLERS:
             _forget_idle_callers(now)
         for key, limit in ((caller, LOOKUPS_PER_MINUTE), (_TOTAL, TOTAL_LOOKUPS_PER_MINUTE)):
             recent = _lookups[key]
@@ -154,7 +159,10 @@ def _lookup_allowed(client, now=None):
 
 
 def _forget_idle_callers(now):
-    """Drop callers with nothing left inside the window. Called with the lock held."""
+    """
+    Drop callers with nothing left inside the window, leaving active ones
+    alone however many there are. Called with the lock held.
+    """
     idle = [key for key, times in _lookups.items()
             if key is not _TOTAL and (not times or times[-1] <= now - RATE_WINDOW_SECONDS)]
     for key in idle:

@@ -251,7 +251,7 @@ class TestRateLimit:
     def test_callers_who_go_quiet_are_forgotten(self, monkeypatch):
         # Otherwise a long-running process keeps an entry for everyone who
         # ever typed an address.
-        monkeypatch.setattr(address_suggest, 'MAX_TRACKED_CALLERS', 3)
+        monkeypatch.setattr(address_suggest, 'SWEEP_AFTER_CALLERS', 3)
         monkeypatch.setattr(address_suggest, 'TOTAL_LOOKUPS_PER_MINUTE', 1000)
         now = [1000.0]
         monkeypatch.setattr(address_suggest.time, 'monotonic', lambda: now[0])
@@ -262,10 +262,10 @@ class TestRateLimit:
             now[0] += address_suggest.RATE_WINDOW_SECONDS + 1
 
         assert len(session.calls) == 20
-        assert len(address_suggest._lookups) <= address_suggest.MAX_TRACKED_CALLERS + 1  # + the shared bucket
+        assert len(address_suggest._lookups) <= address_suggest.SWEEP_AFTER_CALLERS + 1  # + the shared bucket
 
     def test_forgetting_never_loses_an_active_caller(self, monkeypatch):
-        monkeypatch.setattr(address_suggest, 'MAX_TRACKED_CALLERS', 1)
+        monkeypatch.setattr(address_suggest, 'SWEEP_AFTER_CALLERS', 1)
         monkeypatch.setattr(address_suggest, 'LOOKUPS_PER_MINUTE', 2)
         monkeypatch.setattr(address_suggest, 'TOTAL_LOOKUPS_PER_MINUTE', 1000)
         monkeypatch.setattr(address_suggest.time, 'monotonic', lambda: 1000.0)
@@ -279,3 +279,16 @@ class TestRateLimit:
         suggest_addresses('3 Lillian Road', session=session, client='busy')
 
         assert len(session.calls) == 5  # the busy caller's third lookup was refused
+
+    def test_active_callers_are_all_kept_even_past_the_sweep_threshold(self, monkeypatch):
+        # The threshold triggers a sweep; it isn't a cap. Dropping an
+        # active caller would hand them a fresh allowance.
+        monkeypatch.setattr(address_suggest, 'SWEEP_AFTER_CALLERS', 2)
+        monkeypatch.setattr(address_suggest, 'TOTAL_LOOKUPS_PER_MINUTE', 1000)
+        monkeypatch.setattr(address_suggest.time, 'monotonic', lambda: 1000.0)
+        session = FakeSession(photon(feature()))
+
+        for caller in range(6):
+            suggest_addresses(f'{caller} Lillian Road', session=session, client=caller)
+
+        assert len(address_suggest._lookups) == 7  # six active callers, none swept, plus the shared bucket
