@@ -64,6 +64,10 @@ CACHE_ENTRIES = 200
 LOOKUPS_PER_MINUTE = 30       # per caller
 TOTAL_LOOKUPS_PER_MINUTE = 120  # everyone together, out of courtesy to Photon
 RATE_WINDOW_SECONDS = 60
+# Callers are remembered only while their lookups are recent. Past this
+# many, the ones that have gone quiet are forgotten, so a long-running
+# process doesn't keep an entry for everyone who ever typed an address.
+MAX_TRACKED_CALLERS = 256
 
 # Photon returns the state spelled out; everything downstream parses
 # "City, ST".
@@ -132,9 +136,11 @@ _TOTAL = object()  # the bucket every caller shares
 def _lookup_allowed(client, now=None):
     """Whether to make a new request to Photon for this caller right now."""
     now = time.monotonic() if now is None else now
+    caller = client if client is not None else 'anonymous'
     with _lock:
-        for key, limit in ((client if client is not None else 'anonymous', LOOKUPS_PER_MINUTE),
-                           (_TOTAL, TOTAL_LOOKUPS_PER_MINUTE)):
+        if len(_lookups) > MAX_TRACKED_CALLERS:
+            _forget_idle_callers(now)
+        for key, limit in ((caller, LOOKUPS_PER_MINUTE), (_TOTAL, TOTAL_LOOKUPS_PER_MINUTE)):
             recent = _lookups[key]
             while recent and recent[0] <= now - RATE_WINDOW_SECONDS:
                 recent.popleft()
@@ -142,10 +148,17 @@ def _lookup_allowed(client, now=None):
                 return False
         # Only counted once both limits have room, so a refused lookup
         # doesn't push the caller further over.
-        _lookups[client if client is not None else 'anonymous'].append(now)
+        _lookups[caller].append(now)
         _lookups[_TOTAL].append(now)
         return True
 
+
+def _forget_idle_callers(now):
+    """Drop callers with nothing left inside the window. Called with the lock held."""
+    idle = [key for key, times in _lookups.items()
+            if key is not _TOTAL and (not times or times[-1] <= now - RATE_WINDOW_SECONDS)]
+    for key in idle:
+        del _lookups[key]
 
 
 def _format(properties):

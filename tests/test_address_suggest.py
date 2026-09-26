@@ -247,3 +247,35 @@ class TestRateLimit:
         # Caller 2's own allowance was never spent on the refusals.
         assert suggest_addresses('Lillian Road', session=session, client=2) == ['28 Lillian Road, Lexington, MA']
         assert len(session.calls) == 2
+
+    def test_callers_who_go_quiet_are_forgotten(self, monkeypatch):
+        # Otherwise a long-running process keeps an entry for everyone who
+        # ever typed an address.
+        monkeypatch.setattr(address_suggest, 'MAX_TRACKED_CALLERS', 3)
+        monkeypatch.setattr(address_suggest, 'TOTAL_LOOKUPS_PER_MINUTE', 1000)
+        now = [1000.0]
+        monkeypatch.setattr(address_suggest.time, 'monotonic', lambda: now[0])
+        session = FakeSession(photon(feature()))
+
+        for caller in range(20):
+            suggest_addresses(f'{caller} Lillian Road', session=session, client=caller)
+            now[0] += address_suggest.RATE_WINDOW_SECONDS + 1
+
+        assert len(session.calls) == 20
+        assert len(address_suggest._lookups) <= address_suggest.MAX_TRACKED_CALLERS + 1  # + the shared bucket
+
+    def test_forgetting_never_loses_an_active_caller(self, monkeypatch):
+        monkeypatch.setattr(address_suggest, 'MAX_TRACKED_CALLERS', 1)
+        monkeypatch.setattr(address_suggest, 'LOOKUPS_PER_MINUTE', 2)
+        monkeypatch.setattr(address_suggest, 'TOTAL_LOOKUPS_PER_MINUTE', 1000)
+        monkeypatch.setattr(address_suggest.time, 'monotonic', lambda: 1000.0)
+        session = FakeSession(photon(feature()))
+        suggest_addresses('1 Lillian Road', session=session, client='busy')
+        suggest_addresses('2 Lillian Road', session=session, client='busy')
+
+        for other in range(3):  # enough entries to trigger a sweep
+            suggest_addresses(f'{other} Elm Street', session=session, client=f'other-{other}')
+
+        suggest_addresses('3 Lillian Road', session=session, client='busy')
+
+        assert len(session.calls) == 5  # the busy caller's third lookup was refused
