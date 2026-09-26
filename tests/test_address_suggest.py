@@ -172,3 +172,78 @@ class TestRelevance:
         session = FakeSession(photon(feature()))
 
         assert suggest_addresses('Lillian Road Lex', session=session) == ['28 Lillian Road, Lexington, MA']
+
+
+class TestRateLimit:
+    @pytest.fixture(autouse=True)
+    def clear_counters(self):
+        address_suggest._lookups.clear()
+        yield
+        address_suggest._lookups.clear()
+
+    def test_a_caller_cannot_keep_asking_forever(self, monkeypatch):
+        monkeypatch.setattr(address_suggest, 'LOOKUPS_PER_MINUTE', 3)
+        session = FakeSession(photon(feature()))
+
+        for n in range(5):
+            suggest_addresses(f'{n} Lillian Road', session=session, client=1)
+
+        assert len(session.calls) == 3
+
+    def test_callers_are_limited_separately(self, monkeypatch):
+        monkeypatch.setattr(address_suggest, 'LOOKUPS_PER_MINUTE', 1)
+        session = FakeSession(photon(feature()))
+
+        suggest_addresses('1 Lillian Road', session=session, client=1)
+        suggest_addresses('2 Lillian Road', session=session, client=1)
+        suggest_addresses('3 Lillian Road', session=session, client=2)
+
+        assert len(session.calls) == 2
+
+    def test_everyone_together_is_capped_too(self, monkeypatch):
+        monkeypatch.setattr(address_suggest, 'LOOKUPS_PER_MINUTE', 10)
+        monkeypatch.setattr(address_suggest, 'TOTAL_LOOKUPS_PER_MINUTE', 2)
+        session = FakeSession(photon(feature()))
+
+        for caller in range(4):
+            suggest_addresses(f'{caller} Lillian Road', session=session, client=caller)
+
+        assert len(session.calls) == 2
+
+    def test_a_limited_caller_still_gets_cached_answers(self, monkeypatch):
+        monkeypatch.setattr(address_suggest, 'LOOKUPS_PER_MINUTE', 1)
+        session = FakeSession(photon(feature()))
+        suggest_addresses('28 Lillian Road', session=session, client=1)
+
+        assert suggest_addresses('9 Lillian Road', session=session, client=1) == []
+        assert suggest_addresses('28 Lillian Road', session=session, client=1) == [
+            '28 Lillian Road, Lexington, MA']
+        assert len(session.calls) == 1
+
+    def test_the_window_moves_on(self, monkeypatch):
+        monkeypatch.setattr(address_suggest, 'LOOKUPS_PER_MINUTE', 1)
+        now = [1000.0]
+        monkeypatch.setattr(address_suggest.time, 'monotonic', lambda: now[0])
+        session = FakeSession(photon(feature()))
+
+        suggest_addresses('1 Lillian Road', session=session, client=1)
+        suggest_addresses('2 Lillian Road', session=session, client=1)
+        now[0] += address_suggest.RATE_WINDOW_SECONDS + 1
+        suggest_addresses('3 Lillian Road', session=session, client=1)
+
+        assert len(session.calls) == 2
+
+    def test_a_refused_lookup_does_not_count_against_the_caller(self, monkeypatch):
+        monkeypatch.setattr(address_suggest, 'LOOKUPS_PER_MINUTE', 2)
+        monkeypatch.setattr(address_suggest, 'TOTAL_LOOKUPS_PER_MINUTE', 1)
+        session = FakeSession(photon(feature()))
+        suggest_addresses('Elm Street', session=session, client=1)  # spends the shared budget
+        for n in range(3):
+            suggest_addresses(f'Street {n}', session=session, client=2)  # all refused
+        assert len(session.calls) == 1
+
+        monkeypatch.setattr(address_suggest, 'TOTAL_LOOKUPS_PER_MINUTE', 100)
+
+        # Caller 2's own allowance was never spent on the refusals.
+        assert suggest_addresses('Lillian Road', session=session, client=2) == ['28 Lillian Road, Lexington, MA']
+        assert len(session.calls) == 2

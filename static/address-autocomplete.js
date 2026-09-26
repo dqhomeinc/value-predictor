@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const input = document.getElementById('address');
   const list = document.getElementById('address-suggestions');
   if (!input || !list || !input.dataset.suggestUrl) return;
+  const status = document.getElementById('address-status');
 
   const MIN_CHARS = 3;
   const PAUSE_MS = 250;
@@ -17,6 +18,11 @@ document.addEventListener('DOMContentLoaded', () => {
   let active = -1;
   let lastPicked = '';
 
+  function announce(message) {
+    // A dropdown appearing is silent to a screen reader; this says so.
+    if (status) status.textContent = message;
+  }
+
   function close() {
     list.hidden = true;
     list.replaceChildren();
@@ -24,6 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
     input.removeAttribute('aria-activedescendant');
     options = [];
     active = -1;
+    announce('');
   }
 
   function highlight(index) {
@@ -38,6 +45,7 @@ document.addEventListener('DOMContentLoaded', () => {
     input.value = address;
     lastPicked = address;
     close();
+    announce(`${address} selected.`);
     input.focus();
   }
 
@@ -69,6 +77,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     list.hidden = options.length === 0;
     input.setAttribute('aria-expanded', String(options.length > 0));
+    announce(options.length
+      ? `${options.length} address suggestion${options.length === 1 ? '' : 's'}. Use the arrow keys to choose one.`
+      : 'No address suggestions. Type the full address.');
   }
 
   async function search(query) {

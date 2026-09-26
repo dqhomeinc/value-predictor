@@ -29,15 +29,23 @@ are given:
     typed word has to appear.
 
 Photon asks callers to be gentle with the public instance, so results
-are cached here for a few minutes and the form only asks after a pause
-in typing.
+are cached here for a few minutes, the form only asks after a pause in
+typing, and a rate limit caps how often a caller reaches Photon at all.
+The cache is checked first, so a limited caller still gets anything
+already looked up; only new lookups are refused.
+
+The limit is per process and in memory: enough to stop a stuck page or a
+script from cycling through queries, not a defence against a determined
+attacker, which would need shared state across workers.
 
 Never raises: no answer is an empty list, and the form still works.
 """
 
 import logging
 import re
+import threading
 import time
+from collections import defaultdict, deque
 
 import requests
 
@@ -50,6 +58,12 @@ MIN_QUERY_CHARS = 3
 MAX_SUGGESTIONS = 5
 CACHE_SECONDS = 300
 CACHE_ENTRIES = 200
+
+# New lookups per minute. A person typing an address makes a handful;
+# these are set to let normal use through and stop a runaway loop.
+LOOKUPS_PER_MINUTE = 30       # per caller
+TOTAL_LOOKUPS_PER_MINUTE = 120  # everyone together, out of courtesy to Photon
+RATE_WINDOW_SECONDS = 60
 
 # Photon returns the state spelled out; everything downstream parses
 # "City, ST".
@@ -70,13 +84,16 @@ STATE_ABBREVIATIONS = {
 }
 
 _cache = {}  # query -> (expires_at, [addresses])
+_lookups = defaultdict(deque)  # caller -> recent lookup times
+_lock = threading.Lock()
 
 
-def suggest_addresses(query, session=None, limit=MAX_SUGGESTIONS):
+def suggest_addresses(query, session=None, limit=MAX_SUGGESTIONS, client=None):
     """
     Up to `limit` US street addresses matching what's been typed, as
     plain strings like '28 Lillian Road, Lexington, MA'. Empty for a
-    short query, no matches, or any failure.
+    short query, no matches, a caller over the rate limit, or any
+    failure. `client` identifies who is asking, for that limit.
     """
     cleaned = ' '.join((query or '').split())
     if len(cleaned) < MIN_QUERY_CHARS:
@@ -85,6 +102,9 @@ def suggest_addresses(query, session=None, limit=MAX_SUGGESTIONS):
     cached = _cached(cleaned)
     if cached is not None:
         return cached[:limit]
+    if not _lookup_allowed(client):
+        logger.info('Skipping address lookup for %r: rate limit reached', cleaned)
+        return []
 
     session = session or _default_session()
     try:
@@ -104,6 +124,28 @@ def suggest_addresses(query, session=None, limit=MAX_SUGGESTIONS):
             addresses.append(address)
     _store(cleaned, addresses)
     return addresses[:limit]
+
+
+_TOTAL = object()  # the bucket every caller shares
+
+
+def _lookup_allowed(client, now=None):
+    """Whether to make a new request to Photon for this caller right now."""
+    now = time.monotonic() if now is None else now
+    with _lock:
+        for key, limit in ((client if client is not None else 'anonymous', LOOKUPS_PER_MINUTE),
+                           (_TOTAL, TOTAL_LOOKUPS_PER_MINUTE)):
+            recent = _lookups[key]
+            while recent and recent[0] <= now - RATE_WINDOW_SECONDS:
+                recent.popleft()
+            if len(recent) >= limit:
+                return False
+        # Only counted once both limits have room, so a refused lookup
+        # doesn't push the caller further over.
+        _lookups[client if client is not None else 'anonymous'].append(now)
+        _lookups[_TOTAL].append(now)
+        return True
+
 
 
 def _format(properties):

@@ -171,7 +171,8 @@ def suggest_address():
 
     suggestions = [{'address': address, 'source': 'history'} for address in _past_addresses(query)]
     seen = {normalized(item['address']) for item in suggestions}
-    for address in suggest_addresses(query):
+    # Identified per user, so one runaway page can't spend everyone's budget.
+    for address in suggest_addresses(query, client=current_user.id):
         if normalized(address) in seen:
             continue
         seen.add(normalized(address))
