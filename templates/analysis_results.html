@@ -82,7 +82,39 @@
     </ul>
   </section>
 
-  <section>
+{% macro build_standards(standards) %}
+      <div class="standards">
+        <h4 class="standards-title">What you can build
+          {%- if standards.district %}: {{ standards.district }}{% if standards.district_name %} ({{ standards.district_name }}){% endif %}{% endif %}</h4>
+        <table class="standards-table">
+          <tbody>
+            {% for rule in standards.rules %}
+              <tr>
+                <td>
+                  {{ rule.label }}
+                  {% set rule_url = rule.source_url | safe_url %}
+                  {% if rule.note or rule_url %}
+                    <div class="standards-note">{{ rule.note }}{% if rule_url %} <a href="{{ rule_url }}" target="_blank" rel="noopener">Source</a>{% endif %}</div>
+                  {% endif %}
+                </td>
+                <td>{{ rule.value }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p class="muted standards-source">
+          Source:
+          {% set src_url = standards.source.url | safe_url %}
+          {% if src_url %}<a href="{{ src_url }}" target="_blank" rel="noopener">{{ standards.source.citation }}</a>
+          {%- else %}{{ standards.source.citation }}{% endif %}
+          {%- if standards.source.as_of %}, {{ standards.source.as_of }}{% endif %}.
+          {% if standards.caveat %}{{ standards.caveat }}{% endif %}
+          Confirm with the town before making an offer.
+        </p>
+      </div>
+{% endmacro %}
+
+  <section id="build-restrictions">
     <h3>Build restrictions</h3>
     {% if analysis.zoning_detail %}
       {% set zd = analysis.zoning_detail %}
@@ -107,31 +139,7 @@
           {% if ref_url %}<a href="{{ ref_url }}" target="_blank" rel="noopener">View the zoning code</a>.{% endif %}
         </p>
       {% endif %}
-      {% if standards %}
-        <div class="standards">
-          <h4 class="standards-title">What you can build
-            {%- if standards.district %}: {{ standards.district }}{% if standards.district_name %} ({{ standards.district_name }}){% endif %}{% endif %}</h4>
-          <table class="standards-table">
-            <tbody>
-              {% for rule in standards.rules %}
-                <tr>
-                  <td>{{ rule.label }}{% if rule.note %}<div class="standards-note">{{ rule.note }}</div>{% endif %}</td>
-                  <td>{{ rule.value }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-          <p class="muted standards-source">
-            Source:
-            {% set src_url = standards.source.url | safe_url %}
-            {% if src_url %}<a href="{{ src_url }}" target="_blank" rel="noopener">{{ standards.source.citation }}</a>
-            {%- else %}{{ standards.source.citation }}{% endif %}
-            {%- if standards.source.as_of %}, {{ standards.source.as_of }}{% endif %}.
-            {% if standards.caveat %}{{ standards.caveat }}{% endif %}
-            Confirm with the town before making an offer.
-          </p>
-        </div>
-      {% endif %}
+      {% if standards %}{{ build_standards(standards) }}{% endif %}
       {% if restrictions %}
         {% set critical = restrictions | selectattr('severity', 'equalto', 'critical') | list %}
         {% if critical %}
@@ -191,6 +199,10 @@
         {%- if zd.flood_zone %} and FEMA's national flood maps{% endif %}. {{ zoning_note }}
       </p>
     {% else %}
+      {# A saved on-demand search is keyed off the district alone, so it can
+         land here too: RentCast gives the district when no GIS adapter does
+         (services/build_limits_search.py, limits_key). #}
+      {% if standards %}{{ build_standards(standards) }}{% endif %}
       <p class="muted">
         No parcel-level build restrictions available for this address.
         {% if analysis.property_zoning %}
