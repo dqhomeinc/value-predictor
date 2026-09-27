@@ -554,6 +554,31 @@ class TestSavedBuildLimitsOnThePage:
         assert 'What you can build' in html
         assert 'href="javascript:' not in html
 
+    def test_a_rentcast_district_with_no_gis_detail_still_shows_them(self, client):
+        # The case this search exists for: no municipal GIS adapter, so
+        # zoning_detail is None and the district comes from RentCast.
+        analysis = make_logged_in_analysis(client, zoning_detail=None)
+        analysis.property_zoning = 'SF-3'
+        db.session.commit()
+        save_limits(jurisdiction='Austin, TX', district='SF-3')
+
+        text = self._text(client, analysis)
+
+        assert 'What you can build: SF-3' in text
+        assert 'Front setback' in text and '25 ft' in text
+        # The section still says what it can't tell them about overlays.
+        assert 'No parcel-level build restrictions available' in text
+
+    def test_no_saved_row_leaves_the_no_detail_message_alone(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=None)
+        analysis.property_zoning = 'SF-3'
+        db.session.commit()
+
+        text = self._text(client, analysis)
+
+        assert 'What you can build' not in text
+        assert 'No parcel-level build restrictions available' in text
+
     def _text(self, client, analysis):
         return _build_restrictions_text(client.get(f'/analyses/{analysis.id}').data.decode())
 
