@@ -77,19 +77,19 @@ class TestVerification:
 
         assert kept[0]['value'] == 15500
 
-    @pytest.mark.parametrize('quote, value, ok', [
-        ('Maximum height: 2½ stories or 40 feet', 2.5, True),
-        ('Maximum height: 2 1/2 stories or 40 feet', 2.5, True),
-        ('Minimum lot area 15,500 square feet', 15500, True),
-        ('Maximum floor area ratio of .35 applies', 0.35, True),
-        ('Minimum front yard (feet)  130', 30, False),
-        ('Minimum front yard (feet)  30.5', 30, False),
-        ('Minimum side yard (feet)  30  15  20', 15, True),
+    @pytest.mark.parametrize('key, unit, quote, value, ok', [
+        ('max_stories', 'stories', 'Maximum height: 2½ stories or 40 feet', 2.5, True),
+        ('max_stories', 'stories', 'Maximum height: 2 1/2 stories or 40 feet', 2.5, True),
+        ('min_lot_area', 'sq ft', 'Minimum lot area 15,500 square feet', 15500, True),
+        ('max_floor_area_ratio', 'ratio', 'Maximum floor area ratio of .35 applies', 0.35, True),
+        ('front_setback', 'ft', 'Minimum front yard (feet)  130', 30, False),
+        ('front_setback', 'ft', 'Minimum front yard (feet)  30.5', 30, False),
+        ('side_setback', 'ft', 'Minimum side yard (feet)  30  15  20', 15, True),
     ])
-    def test_number_matching(self, quote, value, ok):
+    def test_number_matching(self, key, unit, quote, value, ok):
         evidence = evidence_with(text=quote)
 
-        kept, _ = verify_limits([limit('front_setback', value, 'ft', quote)], evidence)
+        kept, _ = verify_limits([limit(key, value, unit, quote)], evidence)
 
         assert bool(kept) is ok
 
@@ -107,6 +107,67 @@ class TestVerification:
 
         assert kept == []
         assert dropped[0]['reason'] == reason
+
+    @pytest.mark.parametrize('key, unit, quote', [
+        # Right number, wrong row: a coverage percentage filed as a height in feet.
+        ('max_height', 'ft', 'Maximum lot coverage (percent)  35  25'),
+        ('max_lot_coverage', '%', 'Minimum front yard (feet)  35  25'),
+        ('min_lot_area', 'sq ft', 'Minimum lot area (acres)  35'),
+    ])
+    def test_a_quote_in_other_units_is_dropped(self, key, unit, quote):
+        kept, dropped = verify_limits([limit(key, 35, unit, quote)], evidence_with(text=quote))
+
+        assert kept == []
+        assert dropped[0]['reason'] == 'quote names different units'
+
+    def test_a_quote_naming_both_units_serves_either(self):
+        quote = 'Maximum height: 2 1/2 stories or 40 feet, whichever is less.'
+        evidence = evidence_with(text=quote)
+
+        for item in (limit('max_height', 40, 'ft', quote), limit('max_stories', 2.5, 'stories', quote)):
+            assert verify_limits([item], evidence)[0], item['key']
+
+    def test_a_quote_naming_no_unit_is_left_alone(self):
+        # Plenty of real table rows carry the unit in a column header instead.
+        quote = 'Minimum front yard  30  30  25'
+
+        assert verify_limits([limit('front_setback', 30, 'ft', quote)], evidence_with(text=quote))[0]
+
+    def test_a_redirected_fetch_still_backs_the_url_that_was_cited(self):
+        # Town code sites redirect; the quote cites the url Claude asked for,
+        # not the one the fetch landed on.
+        evidence = _Evidence()
+        evidence.add([
+            SimpleNamespace(type='server_tool_use', id='srvtoolu_1', name='web_fetch',
+                            input={'url': CODE_URL}),
+            fetched('https://ecode360.com/12345678/laws/NEW-PATH', TABLE),
+        ])
+
+        kept, _ = verify_limits([limit('front_setback', 30, 'ft', 'Minimum front yard (feet)  30  30')], evidence)
+
+        assert len(kept) == 1
+
+    def test_the_url_a_fetch_landed_on_still_counts(self):
+        evidence = _Evidence()
+        evidence.add([
+            SimpleNamespace(type='server_tool_use', id='srvtoolu_1', name='web_fetch',
+                            input={'url': 'https://ecode360.com/old'}),
+            fetched(CODE_URL, TABLE),
+        ])
+
+        kept, _ = verify_limits([limit('front_setback', 30, 'ft', 'Minimum front yard (feet)  30  30')], evidence)
+
+        assert len(kept) == 1
+
+    def test_a_fetch_that_did_not_redirect_is_stored_once(self):
+        evidence = _Evidence()
+        evidence.add([
+            SimpleNamespace(type='server_tool_use', id='srvtoolu_1', name='web_fetch',
+                            input={'url': CODE_URL}),
+            fetched(CODE_URL, TABLE),
+        ])
+
+        assert [len(texts) for texts in evidence.pages.values()] == [1]
 
     def test_a_limit_reported_twice_keeps_the_first(self):
         quote = 'Minimum front yard (feet)  30  30'

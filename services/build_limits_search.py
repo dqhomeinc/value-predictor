@@ -8,15 +8,21 @@ Everywhere else, a search reads the town's own zoning code and saves what
 it found here, per (jurisdiction, district), so every analysis in that
 district shows it without paying for it again.
 
-A number is kept only when both checks pass:
-  1. its quote contains that number, and
+A number is kept only when all three checks pass:
+  1. its quote contains that number,
   2. the quote appears word for word in text actually received from the
      page it cites during the search: the page text returned by web
-     fetch, a fetched PDF's extracted text, or a search-result excerpt.
+     fetch, a fetched PDF's extracted text, or a search-result excerpt,
+     and
+  3. the quote doesn't name units other than the one it was recorded in.
 Whatever reports the limits also writes the quote, so the first check
 alone would only prove it agrees with itself. The second ties it to what
-the page says. Anything that fails is dropped, so a table can come back
-partial but never with a number its source doesn't contain.
+the page says, and the third catches a number lifted from the wrong line
+of a dimensional table, where a coverage percentage could otherwise be
+saved as a height in feet. Anything that fails is dropped, so a table
+can come back partial but never with a number its source doesn't
+contain. Which line of a table a number came from is still only as good
+as the search: a quote that names no unit at all can't be placed.
 
 The search that produces these reports arrives with it.
 """
@@ -131,7 +137,9 @@ def verify_limits(reported, evidence):
         if not isinstance(item, dict):
             continue
         key, value, unit = item.get('key'), item.get('value'), item.get('unit')
-        quote = _clip(item.get('quote'), 1000)
+        # One over the limit, so an over-long quote still fails the length
+        # check below rather than being silently trimmed into passing it.
+        quote = _clip(item.get('quote'), MAX_QUOTE_CHARS + 1)
         url = safe_external_url(item.get('source_url'))
         reason = _rejection(key, value, unit, quote, url, evidence, seen)
         if reason:
@@ -161,6 +169,9 @@ def _rejection(key, value, unit, quote, url, evidence, seen):
         return 'no source link'
     if not _quote_has_number(quote, value):
         return "quote doesn't contain the number"
+    mentioned = _unit_mentions(quote)
+    if mentioned and unit not in mentioned:
+        return 'quote names different units'
     if not evidence.contains(url, quote):
         return 'quote not found on the page it cites'
     return None
@@ -173,14 +184,22 @@ class _Evidence:
         self.pages = {}  # url key -> [squashed text]
 
     def add(self, content):
-        for block in content or []:
+        blocks = list(content or [])
+        requested = _requested_urls(blocks)
+        for block in blocks:
             kind = getattr(block, 'type', '')
             if kind == 'web_fetch_tool_result':
                 result = getattr(block, 'content', None)
                 if getattr(result, 'type', '') != 'web_fetch_result':
                     continue
                 document = getattr(result, 'content', None)
-                self._add(getattr(result, 'url', ''), _source_text(getattr(document, 'source', None)))
+                text = _source_text(getattr(document, 'source', None))
+                self._add(getattr(result, 'url', ''), text)
+                # A fetch reports the url it landed on, but the quote cites
+                # the one it asked for. Town code sites redirect often, and
+                # keeping only the final url would drop every limit from a
+                # page that moved, as if the search had made them up.
+                self._add(requested.get(getattr(block, 'tool_use_id', ''), ''), text)
             elif kind == 'text':
                 # Search-result excerpts the API attached to Claude's text.
                 # The API writes cited_text, not Claude, so it counts.
@@ -193,8 +212,26 @@ class _Evidence:
         return bool(needle) and any(needle in text for text in self.pages.get(_url_key(url), ()))
 
     def _add(self, url, text):
-        if url and text:
-            self.pages.setdefault(_url_key(url), []).append(_squash(text))
+        if not (url and text):
+            return
+        squashed = _squash(text)
+        texts = self.pages.setdefault(_url_key(url), [])
+        # A fetch that didn't redirect files the same text under one key twice.
+        if squashed not in texts:
+            texts.append(squashed)
+
+
+def _requested_urls(blocks):
+    """tool_use_id -> the url each web fetch was asked for."""
+    urls = {}
+    for block in blocks:
+        if getattr(block, 'type', '') != 'server_tool_use':
+            continue
+        params = getattr(block, 'input', None)
+        url = params.get('url') if isinstance(params, dict) else None
+        if url:
+            urls[getattr(block, 'id', '')] = url
+    return urls
 
 
 def _source_text(source):
@@ -229,6 +266,38 @@ def _normalize(text):
 def _squash(text):
     """Comparable form: case, curly quotes, dashes and all whitespace (line breaks in tables) ignored."""
     return re.sub(r'\s+', '', _normalize(text))
+
+
+# How a zoning code writes each unit. Longest first where one contains
+# another, so "square feet" is never read as plain feet.
+_UNIT_WORDS = (
+    ('sq ft', r"square\s+f(?:ee|oo)t|sq\.?\s*ft\.?"),
+    ('acres', r"\bacres?\b"),
+    ('%', r"%|\bper\s?cents?\b|\bpercent(?:age)?s?\b"),
+    ('stories', r"\bstor(?:y|ies|ey|eys)\b"),
+    ('ratio', r"\bratios?\b|\bf\.?a\.?r\.?\b"),
+    ('ft', r"\bf(?:ee|oo)t\b|\bft\.?|\d\s*'"),
+)
+
+
+def _unit_mentions(quote):
+    """
+    The units the quote itself names, or nothing when it names none.
+
+    The number checks say a quote contains the number and comes from the
+    cited page; neither says the quote is about the limit it was filed
+    under. A row lifted from the wrong line of a dimensional table keeps
+    its own unit words, so a coverage percentage reported as a height in
+    feet is catchable here. A quote that names no unit is left alone —
+    plenty of real table rows don't repeat one.
+    """
+    text = _normalize(quote)
+    mentions = set()
+    for unit, pattern in _UNIT_WORDS:
+        if re.search(pattern, text):
+            mentions.add(unit)
+            text = re.sub(pattern, ' ', text)
+    return mentions
 
 
 def _quote_has_number(quote, value):
