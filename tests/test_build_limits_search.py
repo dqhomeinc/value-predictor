@@ -1,11 +1,227 @@
+import base64
 from types import SimpleNamespace
 
 import pytest
 
 from models import BuildLimitsLookup, db
-from services.build_limits_search import latest_lookup, limits_key, lookup_standards
+from services import build_limits_search
+from services.build_limits_search import (
+    _Evidence,
+    _url_key,
+    latest_lookup,
+    limits_key,
+    lookup_standards,
+    verify_limits,
+)
 
 CODE_URL = 'https://ecode360.com/12345678'
+TABLE = ('Table 2. Schedule of Dimensional Controls\n'
+         'District  RS  RO\nMinimum front yard (feet)  30  30\nMinimum side yard (feet)  15  15\n'
+         'Maximum height: 2½ stories or 40 feet, whichever is less.\n'
+         'Minimum lot area (square feet)  15,500  30,000\n')
+
+
+def fetched(url, text):
+    return SimpleNamespace(type='web_fetch_tool_result', tool_use_id='srvtoolu_1', content=SimpleNamespace(
+        type='web_fetch_result', url=url,
+        content=SimpleNamespace(type='document', source=SimpleNamespace(type='text', media_type='text/plain',
+                                                                         data=text))))
+
+
+def limit(key, value, unit, quote, url=CODE_URL, section='Table 2'):
+    return {'key': key, 'value': value, 'unit': unit, 'quote': quote, 'source_url': url, 'section': section}
+
+
+def evidence_with(url=CODE_URL, text=TABLE):
+    evidence = _Evidence()
+    evidence.add([fetched(url, text)])
+    return evidence
+
+
+class TestVerification:
+    def test_keeps_a_number_quoted_from_the_fetched_page(self):
+        kept, dropped = verify_limits([limit('front_setback', 30, 'ft', 'Minimum front yard (feet)  30  30')],
+                                      evidence_with())
+
+        assert kept == [{'key': 'front_setback', 'value': 30, 'unit': 'ft',
+                         'quote': 'Minimum front yard (feet) 30 30', 'source_url': CODE_URL, 'section': 'Table 2'}]
+        assert dropped == []
+
+    def test_drops_a_quote_that_is_not_on_the_page(self):
+        # Claude writes the quote, so a quote that merely contains the
+        # number proves nothing until it's found on the page.
+        kept, dropped = verify_limits([limit('rear_setback', 15, 'ft', 'Minimum rear yard (feet) 15')],
+                                      evidence_with())
+
+        assert kept == []
+        assert dropped == [{'key': 'rear_setback', 'value': 15, 'reason': 'quote not found on the page it cites'}]
+
+    def test_drops_a_number_its_quote_does_not_contain(self):
+        kept, dropped = verify_limits([limit('side_setback', 12, 'ft', 'Minimum side yard (feet)  15  15')],
+                                      evidence_with())
+
+        assert kept == []
+        assert dropped[0]['reason'] == "quote doesn't contain the number"
+
+    def test_drops_a_quote_from_a_different_page(self):
+        kept, _ = verify_limits([limit('front_setback', 30, 'ft', 'Minimum front yard (feet)  30  30',
+                                       url='https://example.com/other')], evidence_with())
+
+        assert kept == []
+
+    def test_tolerates_line_breaks_case_curly_quotes_and_url_variants(self):
+        evidence = evidence_with(text='Minimum lot area:\n15,500 “square feet”')
+        quote = 'minimum LOT area: 15,500 "square feet"'
+
+        kept, _ = verify_limits([limit('min_lot_area', 15500, 'sq ft', quote, url='http://www.ecode360.com/12345678/')],
+                                evidence)
+
+        assert kept[0]['value'] == 15500
+
+    @pytest.mark.parametrize('key, unit, quote, value, ok', [
+        ('max_stories', 'stories', 'Maximum height: 2½ stories or 40 feet', 2.5, True),
+        ('max_stories', 'stories', 'Maximum height: 2 1/2 stories or 40 feet', 2.5, True),
+        ('min_lot_area', 'sq ft', 'Minimum lot area 15,500 square feet', 15500, True),
+        ('max_floor_area_ratio', 'ratio', 'Maximum floor area ratio of .35 applies', 0.35, True),
+        ('front_setback', 'ft', 'Minimum front yard (feet)  130', 30, False),
+        ('front_setback', 'ft', 'Minimum front yard (feet)  30.5', 30, False),
+        ('side_setback', 'ft', 'Minimum side yard (feet)  30  15  20', 15, True),
+    ])
+    def test_number_matching(self, key, unit, quote, value, ok):
+        evidence = evidence_with(text=quote)
+
+        kept, _ = verify_limits([limit(key, value, unit, quote)], evidence)
+
+        assert bool(kept) is ok
+
+    @pytest.mark.parametrize('item, reason', [
+        (limit('garage_size', 30, 'ft', 'Minimum front yard (feet)  30  30'), 'unknown limit'),
+        (limit('front_setback', 30, 'meters', 'Minimum front yard (feet)  30  30'), 'unknown unit'),
+        (limit('front_setback', 0, 'ft', 'Minimum front yard (feet)  30  30'), 'no usable number'),
+        (limit('front_setback', True, 'ft', 'Minimum front yard (feet)  30  30'), 'no usable number'),
+        (limit('front_setback', 30, 'ft', '30 feet'), 'quote too short or too long'),
+        (limit('front_setback', 30, 'ft', 'Minimum front yard (feet)  30  30', url='javascript:alert(1)'),
+         'no source link'),
+    ])
+    def test_malformed_limits_are_dropped(self, item, reason):
+        kept, dropped = verify_limits([item], evidence_with())
+
+        assert kept == []
+        assert dropped[0]['reason'] == reason
+
+    @pytest.mark.parametrize('key, unit, quote', [
+        # Right number, wrong row: a coverage percentage filed as a height in feet.
+        ('max_height', 'ft', 'Maximum lot coverage (percent)  35  25'),
+        ('max_lot_coverage', '%', 'Minimum front yard (feet)  35  25'),
+        ('min_lot_area', 'sq ft', 'Minimum lot area (acres)  35'),
+    ])
+    def test_a_quote_in_other_units_is_dropped(self, key, unit, quote):
+        kept, dropped = verify_limits([limit(key, 35, unit, quote)], evidence_with(text=quote))
+
+        assert kept == []
+        assert dropped[0]['reason'] == 'quote names different units'
+
+    def test_a_quote_naming_both_units_serves_either(self):
+        quote = 'Maximum height: 2 1/2 stories or 40 feet, whichever is less.'
+        evidence = evidence_with(text=quote)
+
+        for item in (limit('max_height', 40, 'ft', quote), limit('max_stories', 2.5, 'stories', quote)):
+            assert verify_limits([item], evidence)[0], item['key']
+
+    def test_a_quote_naming_no_unit_is_left_alone(self):
+        # Plenty of real table rows carry the unit in a column header instead.
+        quote = 'Minimum front yard  30  30  25'
+
+        assert verify_limits([limit('front_setback', 30, 'ft', quote)], evidence_with(text=quote))[0]
+
+    def test_a_redirected_fetch_still_backs_the_url_that_was_cited(self):
+        # Town code sites redirect; the quote cites the url Claude asked for,
+        # not the one the fetch landed on.
+        evidence = _Evidence()
+        evidence.add([
+            SimpleNamespace(type='server_tool_use', id='srvtoolu_1', name='web_fetch',
+                            input={'url': CODE_URL}),
+            fetched('https://ecode360.com/12345678/laws/NEW-PATH', TABLE),
+        ])
+
+        kept, _ = verify_limits([limit('front_setback', 30, 'ft', 'Minimum front yard (feet)  30  30')], evidence)
+
+        assert len(kept) == 1
+
+    def test_the_url_a_fetch_landed_on_still_counts(self):
+        evidence = _Evidence()
+        evidence.add([
+            SimpleNamespace(type='server_tool_use', id='srvtoolu_1', name='web_fetch',
+                            input={'url': 'https://ecode360.com/old'}),
+            fetched(CODE_URL, TABLE),
+        ])
+
+        kept, _ = verify_limits([limit('front_setback', 30, 'ft', 'Minimum front yard (feet)  30  30')], evidence)
+
+        assert len(kept) == 1
+
+    def test_a_fetch_that_did_not_redirect_is_stored_once(self):
+        evidence = _Evidence()
+        evidence.add([
+            SimpleNamespace(type='server_tool_use', id='srvtoolu_1', name='web_fetch',
+                            input={'url': CODE_URL}),
+            fetched(CODE_URL, TABLE),
+        ])
+
+        assert [len(texts) for texts in evidence.pages.values()] == [1]
+
+    @pytest.mark.parametrize('key', [['front_setback'], {'key': 'front_setback'}, None, 7])
+    def test_a_key_that_is_not_a_limit_name_is_dropped(self, key):
+        # An unhashable key would raise on the LIMITS lookup rather than be
+        # dropped the way every other malformed field is.
+        kept, dropped = verify_limits([limit(key, 30, 'ft', 'Minimum front yard (feet)  30  30')],
+                                      evidence_with())
+
+        assert kept == []
+        assert dropped[0]['reason'] == 'unknown limit'
+
+    def test_only_a_web_fetch_supplies_the_url_it_asked_for(self):
+        # Pairing is by tool_use_id; requiring the name keeps that from
+        # resting on ids being unique across the different server tools.
+        evidence = _Evidence()
+        evidence.add([
+            SimpleNamespace(type='server_tool_use', id='srvtoolu_1', name='web_search',
+                            input={'url': 'https://example.com/not-fetched'}),
+            fetched(CODE_URL, TABLE),
+        ])
+
+        assert list(evidence.pages) == [_url_key(CODE_URL)]
+
+    def test_a_limit_reported_twice_keeps_the_first(self):
+        quote = 'Minimum front yard (feet)  30  30'
+
+        kept, dropped = verify_limits([limit('front_setback', 30, 'ft', quote), limit('front_setback', 30, 'ft', quote)],
+                                      evidence_with())
+
+        assert len(kept) == 1
+        assert dropped[0]['reason'] == 'reported twice'
+
+    def test_search_excerpts_count_as_evidence(self):
+        evidence = _Evidence()
+        evidence.add([SimpleNamespace(type='text', text='The bylaw says...', citations=[SimpleNamespace(
+            type='web_search_result_location', url=CODE_URL, title='Bylaw',
+            cited_text='Minimum front yard (feet) 30 30')])])
+
+        kept, _ = verify_limits([limit('front_setback', 30, 'ft', 'Minimum front yard (feet) 30 30')], evidence)
+
+        assert len(kept) == 1
+
+    def test_fetched_pdfs_are_read(self, monkeypatch):
+        monkeypatch.setattr(build_limits_search, '_pdf_text', lambda data: TABLE if base64.b64decode(data) == b'pdf' else '')
+        evidence = _Evidence()
+        evidence.add([SimpleNamespace(type='web_fetch_tool_result', content=SimpleNamespace(
+            type='web_fetch_result', url=CODE_URL, content=SimpleNamespace(type='document', source=SimpleNamespace(
+                type='base64', media_type='application/pdf', data=base64.b64encode(b'pdf').decode()))))])
+
+        assert evidence.contains(CODE_URL, 'Minimum front yard (feet)  30  30')
+
+    def test_unreadable_pdf_is_no_evidence(self):
+        assert build_limits_search._pdf_text(base64.b64encode(b'not a pdf').decode()) == ''
 
 
 def analysis(**overrides):
