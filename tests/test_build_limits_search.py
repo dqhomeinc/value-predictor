@@ -238,6 +238,17 @@ class TestVerification:
 
         assert list(evidence.pages) == [_url_key(CODE_URL)]
 
+    def test_a_dropped_limit_leaves_its_key_free(self):
+        # `seen` tracks what was kept, not what was reported, so a bad first
+        # attempt doesn't block a sound second one for the same limit.
+        quote = 'Minimum front yard (feet)  30  30'
+        bad = limit('front_setback', 30, 'ft', 'Minimum front yard (feet) 30', url='https://example.com/other')
+
+        kept, dropped = verify_limits([bad, limit('front_setback', 30, 'ft', quote)], evidence_with())
+
+        assert [item['quote'] for item in kept] == ['Minimum front yard (feet) 30 30']
+        assert dropped[0]['reason'] == 'quote not found on the page it cites'
+
     def test_a_limit_reported_twice_keeps_the_first(self):
         quote = 'Minimum front yard (feet)  30  30'
 

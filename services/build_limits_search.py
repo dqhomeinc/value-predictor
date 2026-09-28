@@ -260,6 +260,10 @@ def run_lookup(client, key, user_id):
         row.web_searches = result.web_searches
         row.web_fetches = result.web_fetches
         row.notes = result.notes
+        # Only reachable when it found the table and nothing survived the
+        # checks: a search that reported nothing found drops nothing either,
+        # since search_build_limits doesn't pass its limits on (line ~357).
+        # A 'not found' result keeps whatever explanation it gave instead.
         if result.found and not result.limits and result.dropped:
             row.notes = (f'It reported {len(result.dropped)} value{"s" if len(result.dropped) != 1 else ""}, '
                          "but none matched the text of the page it cited, so none are shown.")
@@ -382,6 +386,8 @@ def verify_limits(reported, evidence):
             number = value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
             dropped.append({'key': str(key)[:40], 'value': number, 'reason': reason})
             continue
+        # Kept, not reported: a limit dropped for some other reason leaves
+        # the key free, so a second, sounder report of it still counts.
         seen.add(key)
         kept.append({
             'key': key, 'value': int(value) if value == int(value) else float(value), 'unit': unit,
@@ -397,7 +403,14 @@ def _rejection(key, value, unit, quote, url, evidence, seen):
         return 'unknown limit'
     if key in seen:
         return 'reported twice'
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < 10_000_000:
+    # bool before the number test: True is an int in Python and would
+    # otherwise be saved as a 1 ft setback.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 'no usable number'
+    # Zero is excluded on purpose. A 0 in a dimensional table can mean
+    # "none required" or "not recorded", and "0 ft" would tell a buyer
+    # they can build to the lot line. The ceiling catches a misread page.
+    if not 0 < value < 10_000_000:
         return 'no usable number'
     if unit not in UNITS:
         return 'unknown unit'
