@@ -3,7 +3,12 @@ services:
     name: value-predictor
     runtime: python
     buildCommand: pip install -r requirements.txt && FLASK_APP=wsgi:app flask db upgrade
-    startCommand: gunicorn wsgi:app
+    # 90s timeout and 4 threads: an on-demand build-limits search
+    # (services/build_limits_search.py) takes up to ~80s, and threads keep
+    # one long request from stalling everyone else on the single worker.
+    # gunicorn swaps sync for gthread on its own once threads > 1, but the
+    # class is named here so the threads aren't resting on that inference.
+    startCommand: gunicorn wsgi:app --timeout 90 --workers 1 --worker-class gthread --threads 4
     plan: free
     envVars:
       - key: SECRET_KEY
@@ -14,5 +19,9 @@ services:
       - key: RENTCAST_API_KEY
         sync: false
         # Set to your RentCast API key (https://www.rentcast.io/api).
+      - key: ANTHROPIC_API_KEY
+        sync: false
+        # Set to your Anthropic API key (https://platform.claude.com/), for the
+        # on-demand build-limits search. Without it, the search button is hidden.
       - key: PYTHON_VERSION
         value: 3.11.0
