@@ -7,6 +7,7 @@ from models import BuildLimitsLookup, db
 from services import build_limits_search
 from services.build_limits_search import (
     _Evidence,
+    _url_key,
     latest_lookup,
     limits_key,
     lookup_standards,
@@ -168,6 +169,28 @@ class TestVerification:
         ])
 
         assert [len(texts) for texts in evidence.pages.values()] == [1]
+
+    @pytest.mark.parametrize('key', [['front_setback'], {'key': 'front_setback'}, None, 7])
+    def test_a_key_that_is_not_a_limit_name_is_dropped(self, key):
+        # An unhashable key would raise on the LIMITS lookup rather than be
+        # dropped the way every other malformed field is.
+        kept, dropped = verify_limits([limit(key, 30, 'ft', 'Minimum front yard (feet)  30  30')],
+                                      evidence_with())
+
+        assert kept == []
+        assert dropped[0]['reason'] == 'unknown limit'
+
+    def test_only_a_web_fetch_supplies_the_url_it_asked_for(self):
+        # Pairing is by tool_use_id; requiring the name keeps that from
+        # resting on ids being unique across the different server tools.
+        evidence = _Evidence()
+        evidence.add([
+            SimpleNamespace(type='server_tool_use', id='srvtoolu_1', name='web_search',
+                            input={'url': 'https://example.com/not-fetched'}),
+            fetched(CODE_URL, TABLE),
+        ])
+
+        assert list(evidence.pages) == [_url_key(CODE_URL)]
 
     def test_a_limit_reported_twice_keeps_the_first(self):
         quote = 'Minimum front yard (feet)  30  30'

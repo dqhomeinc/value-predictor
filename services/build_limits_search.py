@@ -155,7 +155,9 @@ def verify_limits(reported, evidence):
 
 
 def _rejection(key, value, unit, quote, url, evidence, seen):
-    if key not in LIMITS:
+    # Checked before the lookup: an unhashable key would raise here rather
+    # than be dropped the way every other malformed field is.
+    if not isinstance(key, str) or key not in LIMITS:
         return 'unknown limit'
     if key in seen:
         return 'reported twice'
@@ -225,7 +227,7 @@ def _requested_urls(blocks):
     """tool_use_id -> the url each web fetch was asked for."""
     urls = {}
     for block in blocks:
-        if getattr(block, 'type', '') != 'server_tool_use':
+        if getattr(block, 'type', '') != 'server_tool_use' or getattr(block, 'name', '') != 'web_fetch':
             continue
         params = getattr(block, 'input', None)
         url = params.get('url') if isinstance(params, dict) else None
