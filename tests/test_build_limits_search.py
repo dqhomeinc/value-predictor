@@ -1,16 +1,29 @@
 import base64
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import anthropic
 import pytest
 
-from models import BuildLimitsLookup, db
+from models import BuildLimitsLookup, User, db
 from services import build_limits_search
 from services.build_limits_search import (
+    RECORD_TOOL_NAME,
+    LimitsSearchError,
+    MockLimitsClient,
     _Evidence,
     _url_key,
+    build_limits_client,
+    daily_search_limit,
     latest_lookup,
+    limits_configured,
     limits_key,
+    limits_mock_enabled,
+    limits_model,
     lookup_standards,
+    run_lookup,
+    search_build_limits,
+    searches_in_last_day,
     verify_limits,
 )
 
@@ -21,6 +34,14 @@ TABLE = ('Table 2. Schedule of Dimensional Controls\n'
          'Minimum lot area (square feet)  15,500  30,000\n')
 
 
+class FakeAPIError(anthropic.APIError):
+    """An API failure without the HTTP request the SDK's own constructors need."""
+
+    def __init__(self):
+        self.message = 'Claude is unavailable'
+        Exception.__init__(self, self.message)
+
+
 def fetched(url, text):
     return SimpleNamespace(type='web_fetch_tool_result', tool_use_id='srvtoolu_1', content=SimpleNamespace(
         type='web_fetch_result', url=url,
@@ -28,8 +49,33 @@ def fetched(url, text):
                                                                          data=text))))
 
 
+def recorded(limits, found=True, **fields):
+    payload = {'found': found, 'code_title': 'Zoning Bylaw', 'code_url': CODE_URL, 'district_as_written': 'RS',
+               'notes': '', 'limits': limits, **fields}
+    return SimpleNamespace(type='tool_use', id='toolu_1', name=RECORD_TOOL_NAME, input=payload)
+
+
 def limit(key, value, unit, quote, url=CODE_URL, section='Table 2'):
     return {'key': key, 'value': value, 'unit': unit, 'quote': quote, 'source_url': url, 'section': section}
+
+
+def response(*content, stop_reason='end_turn', searches=0, fetches=0):
+    return SimpleNamespace(content=list(content), stop_reason=stop_reason, usage=SimpleNamespace(
+        server_tool_use=SimpleNamespace(web_search_requests=searches, web_fetch_requests=fetches)))
+
+
+class FakeClient:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+        self.messages = self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        result = self.responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 def evidence_with(url=CODE_URL, text=TABLE):
@@ -192,6 +238,17 @@ class TestVerification:
 
         assert list(evidence.pages) == [_url_key(CODE_URL)]
 
+    def test_a_dropped_limit_leaves_its_key_free(self):
+        # `seen` tracks what was kept, not what was reported, so a bad first
+        # attempt doesn't block a sound second one for the same limit.
+        quote = 'Minimum front yard (feet)  30  30'
+        bad = limit('front_setback', 30, 'ft', 'Minimum front yard (feet) 30', url='https://example.com/other')
+
+        kept, dropped = verify_limits([bad, limit('front_setback', 30, 'ft', quote)], evidence_with())
+
+        assert [item['quote'] for item in kept] == ['Minimum front yard (feet) 30 30']
+        assert dropped[0]['reason'] == 'quote not found on the page it cites'
+
     def test_a_limit_reported_twice_keeps_the_first(self):
         quote = 'Minimum front yard (feet)  30  30'
 
@@ -224,6 +281,97 @@ class TestVerification:
         assert build_limits_search._pdf_text(base64.b64encode(b'not a pdf').decode()) == ''
 
 
+class TestSearch:
+    def test_finds_checks_and_counts(self):
+        client = FakeClient(response(
+            fetched(CODE_URL, TABLE),
+            recorded([limit('front_setback', 30, 'ft', 'Minimum front yard (feet)  30  30'),
+                      limit('rear_setback', 15, 'ft', 'Minimum rear yard (feet) 15')]),
+            stop_reason='tool_use', searches=2, fetches=1))
+
+        result = search_build_limits(client, 'Lexington, MA', 'RS')
+
+        assert result.found is True
+        assert [item['key'] for item in result.limits] == ['front_setback']
+        assert [item['key'] for item in result.dropped] == ['rear_setback']
+        assert (result.code_title, result.code_url, result.district_as_written) == ('Zoning Bylaw', CODE_URL, 'RS')
+        assert (result.web_searches, result.web_fetches) == (2, 1)
+
+    def test_request_carries_the_task_and_tools(self):
+        client = FakeClient(response(recorded([], found=False), stop_reason='tool_use'))
+
+        search_build_limits(client, 'Lexington, MA', 'RS')
+
+        call = client.calls[0]
+        assert call['model'] == limits_model()
+        assert 'zoning code of Lexington, MA sets for the "RS" zoning district' in call['system']
+        assert call['messages'] == [{'role': 'user', 'content': 'Find the build limits for the "RS" zoning district in Lexington, MA.'}]
+        search, fetch, record = call['tools']
+        assert search['type'] == 'web_search_20250305'
+        assert search['user_location'] == {'type': 'approximate', 'city': 'Lexington', 'region': 'MA', 'country': 'US'}
+        assert fetch['type'] == 'web_fetch_20250910'
+        assert record['name'] == RECORD_TOOL_NAME
+        assert 'tool_choice' not in call
+        assert 0 < call['timeout'] <= build_limits_search.TIME_BUDGET
+
+    def test_not_found(self):
+        client = FakeClient(response(recorded([], found=False, notes='No code published online.'), stop_reason='tool_use'))
+
+        result = search_build_limits(client, 'Smallville, KS', 'A')
+
+        assert result.found is False
+        assert result.limits == []
+        assert result.notes == 'No code published online.'
+
+    def test_a_paused_turn_is_continued(self):
+        paused = response(fetched(CODE_URL, TABLE), stop_reason='pause_turn', fetches=1)
+        client = FakeClient(paused, response(
+            recorded([limit('front_setback', 30, 'ft', 'Minimum front yard (feet)  30  30')]), stop_reason='tool_use'))
+
+        result = search_build_limits(client, 'Lexington, MA', 'RS')
+
+        assert client.calls[1]['messages'][-1] == {'role': 'assistant', 'content': paused.content}
+        # The page fetched in the paused turn still counts as evidence.
+        assert len(result.limits) == 1
+
+    def test_finishing_without_recording_gets_one_required_nudge(self):
+        first = response(SimpleNamespace(type='text', text='The front yard is 30 feet.', citations=[]))
+        client = FakeClient(first, response(recorded([], found=False), stop_reason='tool_use'))
+
+        search_build_limits(client, 'Lexington, MA', 'RS')
+
+        second = client.calls[1]
+        assert second['tool_choice'] == {'type': 'tool', 'name': RECORD_TOOL_NAME}
+        assert second['messages'][-2:] == [{'role': 'assistant', 'content': first.content},
+                                           {'role': 'user', 'content': build_limits_search.NUDGE_PROMPT}]
+
+    def test_never_recording_is_an_error(self):
+        text = response(SimpleNamespace(type='text', text='Done.', citations=[]))
+
+        with pytest.raises(LimitsSearchError):
+            search_build_limits(FakeClient(text, text), 'Lexington, MA', 'RS')
+
+    def test_out_of_time_stops_asking(self):
+        ticks = iter([0, 0, 75])  # start, first request, then nearly out of budget
+        client = FakeClient(response(stop_reason='pause_turn'))
+
+        with pytest.raises(LimitsSearchError):
+            search_build_limits(client, 'Lexington, MA', 'RS', clock=lambda: next(ticks))
+
+        assert len(client.calls) == 1
+
+    def test_api_failure(self):
+        with pytest.raises(LimitsSearchError):
+            search_build_limits(FakeClient(FakeAPIError()), 'Lexington, MA', 'RS')
+
+    def test_mock_client_runs_the_real_checks(self):
+        result = search_build_limits(MockLimitsClient(), 'Mockville, TX', 'R-1')
+
+        assert [item['key'] for item in result.limits] == [
+            'front_setback', 'side_setback', 'rear_setback', 'max_height', 'max_lot_coverage', 'min_lot_area']
+        assert result.dropped == [{'key': 'max_stories', 'value': 3, 'reason': 'quote not found on the page it cites'}]
+
+
 def analysis(**overrides):
     fields = {'address': '123 Main St, Pittsburgh, PA 15217', 'property_zoning': None,
               'zoning_detail': {'zoning_code': 'RM-M', 'jurisdiction': 'Pittsburgh, PA'}}
@@ -251,6 +399,53 @@ class TestKey:
     ])
     def test_none_without_a_usable_district_and_place(self, overrides):
         assert limits_key(analysis(**overrides)) is None
+
+
+class TestConfiguration:
+    @pytest.fixture(autouse=True)
+    def clean_env(self, monkeypatch):
+        for key in ('DATABASE_URL', 'RENTCAST_MOCK', 'ANTHROPIC_API_KEY', 'BUILD_LIMITS_MODEL',
+                    'BUILD_LIMITS_DAILY_LIMIT'):
+            monkeypatch.delenv(key, raising=False)
+
+    def test_mock_by_default_locally(self):
+        assert limits_mock_enabled() is True
+        assert isinstance(build_limits_client(), MockLimitsClient)
+
+    def test_never_mock_where_a_database_url_is_set(self, monkeypatch):
+        monkeypatch.setenv('DATABASE_URL', 'postgresql+pg8000://example')
+        monkeypatch.setenv('RENTCAST_MOCK', '1')
+
+        assert limits_mock_enabled() is False
+
+    def test_no_client_without_a_key(self, monkeypatch):
+        monkeypatch.setenv('RENTCAST_MOCK', '0')
+
+        assert build_limits_client() is None
+        assert limits_configured() is False
+
+    def test_real_client_with_a_key(self, monkeypatch):
+        monkeypatch.setenv('RENTCAST_MOCK', '0')
+        monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-test')
+
+        client = build_limits_client()
+
+        assert isinstance(client, anthropic.Anthropic)
+        assert client.max_retries == 0
+        assert limits_configured() is True
+
+    def test_model_defaults_to_sonnet(self, monkeypatch):
+        assert limits_model() == 'claude-sonnet-5'
+        monkeypatch.setenv('BUILD_LIMITS_MODEL', 'claude-opus-5')
+
+        assert limits_model() == 'claude-opus-5'
+
+    @pytest.mark.parametrize('value, expected', [(None, 5), ('', 5), ('many', 5), ('2', 2)])
+    def test_daily_limit(self, monkeypatch, value, expected):
+        if value is not None:
+            monkeypatch.setenv('BUILD_LIMITS_DAILY_LIMIT', value)
+
+        assert daily_search_limit() == expected
 
 
 def saved(**overrides):
@@ -316,3 +511,55 @@ class TestSavedRows:
 
     def test_a_row_without_a_code_title_still_names_a_source(self, app):
         assert lookup_standards(saved(code_title=''))['source']['citation'] == "Pittsburgh, PA's zoning code"
+
+
+class TestRunLookup:
+    @pytest.fixture
+    def user(self, app):
+        user = User(username='me', email='me@example.com', password_hash='x')
+        db.session.add(user)
+        db.session.commit()
+        return user
+
+    def test_a_found_search_is_saved(self, app, user):
+        row = run_lookup(MockLimitsClient(), ('Mockville, TX', 'R-1'), user.id)
+
+        assert row.status == 'found'
+        assert (row.web_searches, row.web_fetches) == (1, 1)
+        assert row.model == limits_model()
+        assert latest_lookup('Mockville, TX', 'R-1') == row
+        assert [item['key'] for item in row.limits] == [
+            'front_setback', 'side_setback', 'rear_setback', 'max_height', 'max_lot_coverage', 'min_lot_area']
+        assert [item['key'] for item in row.dropped] == ['max_stories']
+
+    def test_every_value_failing_the_check_is_not_found(self, app, user):
+        client = FakeClient(response(fetched(CODE_URL, TABLE),
+                                     recorded([limit('rear_setback', 15, 'ft', 'Minimum rear yard (feet) 15')]),
+                                     stop_reason='tool_use'))
+
+        row = run_lookup(client, ('Lexington, MA', 'RS'), user.id)
+
+        assert row.status == 'not_found'
+        assert 'none matched the text of the page it cited' in row.notes
+
+    def test_a_failure_is_saved_but_never_shown_as_a_result(self, app, user):
+        row = run_lookup(FakeClient(FakeAPIError()), ('Lexington, MA', 'RS'), user.id)
+
+        assert row.status == 'failed'
+        assert latest_lookup('Lexington, MA', 'RS') is None
+
+    def test_counts_every_attempt_by_this_user_in_the_last_day(self, app, user):
+        other = User(username='other', email='other@example.com', password_hash='x')
+        db.session.add(other)
+        db.session.commit()
+        old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=2)
+        db.session.add_all([
+            BuildLimitsLookup(jurisdiction='A, MA', district='R', status='found', requested_by_user_id=user.id),
+            BuildLimitsLookup(jurisdiction='B, MA', district='R', status='failed', requested_by_user_id=user.id),
+            BuildLimitsLookup(jurisdiction='C, MA', district='R', status='found', requested_by_user_id=user.id,
+                              created_at=old),
+            BuildLimitsLookup(jurisdiction='D, MA', district='R', status='found', requested_by_user_id=other.id),
+        ])
+        db.session.commit()
+
+        assert searches_in_last_day(user.id) == 2
