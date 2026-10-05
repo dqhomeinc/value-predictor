@@ -1,7 +1,7 @@
 """add chat_message
 
 Revision ID: 5b1e7c3d9a2f
-Revises: 68752a5180b9
+Revises: c3e8f1a2b7d4
 Create Date: 2026-09-10 12:00:00.000000
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '5b1e7c3d9a2f'
-down_revision = '68752a5180b9'
+down_revision = 'c3e8f1a2b7d4'
 branch_labels = None
 depends_on = None
 

@@ -146,6 +146,37 @@ class Analysis(db.Model):
         return [entry for _, entry in sorted(self.property_sale_history.items(), reverse=True)]
 
 
+class BuildLimitsLookup(db.Model):
+    """
+    One on-demand search for a zoning district's exact build limits
+    (services/build_limits_search.py). Every attempt gets a row, so the
+    daily cap counts failed searches too, since they cost money as well.
+    The newest 'found' or 'not_found' row for a (jurisdiction, district)
+    is what every analysis in that district shows.
+    """
+    __tablename__ = 'build_limits_lookup'
+    __table_args__ = (db.Index('ix_build_limits_lookup_key', 'jurisdiction', 'district'),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    jurisdiction = db.Column(db.String(120), nullable=False)  # 'Lexington, MA'
+    district = db.Column(db.String(50), nullable=False)  # 'RS', uppercased
+    status = db.Column(db.String(12), nullable=False)  # 'found' | 'not_found' | 'failed'
+    # Limits that passed the quote check: [{key, value, unit, quote, source_url, section}]
+    limits = db.Column(db.JSON, nullable=True)
+    # Limits reported but dropped by the check: [{key, value, reason}]
+    dropped = db.Column(db.JSON, nullable=True)
+    code_title = db.Column(db.String(255), nullable=True)
+    code_url = db.Column(db.Text, nullable=True)
+    district_as_written = db.Column(db.String(100), nullable=True)
+    notes = db.Column(db.Text, nullable=True)
+    model = db.Column(db.String(50), nullable=True)
+    # Billed searches and page fetches, for keeping an eye on spend.
+    web_searches = db.Column(db.Integer, nullable=False, default=0, server_default='0')
+    web_fetches = db.Column(db.Integer, nullable=False, default=0, server_default='0')
+    requested_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+
 class ChatMessage(db.Model):
     """
     One message in the build-restrictions chat on an analysis's results

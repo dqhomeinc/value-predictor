@@ -6,7 +6,8 @@ import anthropic
 import pytest
 
 from app import create_app
-from models import Analysis, ChatMessage, User, db
+from models import Analysis, BuildLimitsLookup, ChatMessage, User, db
+from services.build_limits_search import MockLimitsClient
 
 
 @pytest.fixture(scope='module')
@@ -479,12 +480,360 @@ class TestWhatYouCanBuild:
         assert 'href="javascript:' not in html
 
 
+PITTSBURGH_DISCOVERED = {**LEXINGTON_DISCOVERED, 'jurisdiction': 'Pittsburgh, PA', 'zoning_code': 'RM-M',
+                         'service_title': 'Pittsburgh Zoning', 'service_owner': 'pgh_gis'}
+PITTSBURGH_CODE_URL = 'https://library.municode.com/pa/pittsburgh/zoning'
+
+
+def save_limits(**overrides):
+    fields = {
+        'jurisdiction': 'Pittsburgh, PA', 'district': 'RM-M', 'status': 'found',
+        'code_title': 'Pittsburgh Zoning Code', 'code_url': PITTSBURGH_CODE_URL,
+        'limits': [{'key': 'front_setback', 'value': 25, 'unit': 'ft', 'quote': 'Minimum front yard: 25 feet',
+                    'source_url': PITTSBURGH_CODE_URL, 'section': 'Table 4.1'}],
+        'dropped': [{'key': 'max_stories', 'value': 3, 'reason': 'quote not found on the page it cites'}],
+    }
+    fields.update(overrides)
+    row = BuildLimitsLookup(**fields)
+    db.session.add(row)
+    db.session.commit()
+    return row
+
+
+class TestSavedBuildLimitsOnThePage:
+    def test_shows_the_limits_with_their_quotes_and_sources(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        save_limits()
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        text = _build_restrictions_text(html)
+        assert 'What you can build: RM-M' in text
+        assert 'Front setback' in text and '25 ft' in text
+        assert 'Minimum front yard: 25 feet' in text
+        assert 'Pittsburgh Zoning Code' in text
+        assert 'searched ' in text
+        assert "1 other value it reported didn't match its source" in text
+        assert f'href="{PITTSBURGH_CODE_URL}"' in html
+
+    def test_every_analysis_in_the_district_shows_it(self, client):
+        save_limits()
+        first = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        second = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        for analysis in (first, second):
+            assert 'What you can build: RM-M' in self._text(client, analysis)
+
+    def test_a_different_district_is_not_borrowed(self, client):
+        save_limits()
+        analysis = make_logged_in_analysis(client, zoning_detail={**PITTSBURGH_DISCOVERED, 'zoning_code': 'R1A'})
+
+        assert 'What you can build' not in self._text(client, analysis)
+
+    def test_a_search_that_found_nothing_shows_nothing(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        save_limits(status='not_found', limits=None)
+
+        assert 'What you can build' not in self._text(client, analysis)
+
+    def test_hand_checked_towns_still_win(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=LEXINGTON_DISCOVERED)
+        save_limits(jurisdiction='Lexington, MA', district='RS')
+
+        text = self._text(client, analysis)
+
+        assert 'Lexington Zoning Bylaw, Ch. 135' in text
+        assert 'Minimum front yard: 25 feet' not in text
+
+    def test_hostile_urls_in_a_saved_row_are_not_linked(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        save_limits(code_url='javascript:alert(1)',
+                    limits=[{'key': 'front_setback', 'value': 25, 'unit': 'ft',
+                             'quote': 'Minimum front yard: 25 feet', 'source_url': 'javascript:alert(2)',
+                             'section': ''}])
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        assert 'What you can build' in html
+        assert 'href="javascript:' not in html
+
+    def test_a_rentcast_district_with_no_gis_detail_still_shows_them(self, client):
+        # The case this search exists for: no municipal GIS adapter, so
+        # zoning_detail is None and the district comes from RentCast.
+        analysis = make_logged_in_analysis(client, zoning_detail=None)
+        analysis.property_zoning = 'SF-3'
+        db.session.commit()
+        save_limits(jurisdiction='Austin, TX', district='SF-3')
+
+        text = self._text(client, analysis)
+
+        assert 'What you can build: SF-3' in text
+        assert 'Front setback' in text and '25 ft' in text
+        # The section still says what it can't tell them about overlays.
+        assert 'No parcel-level build restrictions available' in text
+
+    def test_no_saved_row_leaves_the_no_detail_message_alone(self, client):
+        analysis = make_logged_in_analysis(client, zoning_detail=None)
+        analysis.property_zoning = 'SF-3'
+        db.session.commit()
+
+        text = self._text(client, analysis)
+
+        assert 'What you can build' not in text
+        assert 'No parcel-level build restrictions available' in text
+
+    def _text(self, client, analysis):
+        return _build_restrictions_text(client.get(f'/analyses/{analysis.id}').data.decode())
+
+
+def add_analysis(address, user_id):
+    analysis = Analysis(user_id=user_id, address=address, purchase_price=1, initial_cost_per_sqft=1,
+                        initial_profit_margin_pct=1)
+    db.session.add(analysis)
+    db.session.commit()
+    return analysis
+
+
+class TestAddressSuggestions:
+    def _suggest(self, client, query):
+        return client.get('/addresses/suggest', query_string={'q': query})
+
+    def test_requires_login(self, client):
+        assert self._suggest(client, '28 Lillian').status_code in (302, 401)
+
+    def test_short_query_asks_the_provider_nothing(self, client, monkeypatch):
+        asked = []
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query, **kwargs: asked.append(query) or [])
+        make_logged_in_analysis(client)
+
+        response = self._suggest(client, 'Ma')
+
+        assert response.status_code == 200
+        assert response.get_json() == {'suggestions': []}
+        assert asked == []
+
+    def test_offers_photon_matches(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses',
+                            lambda query, **kwargs: ['28 Lillian Road, Lexington, MA', '30 Lillian Road, Lexington, MA'])
+        make_logged_in_analysis(client)
+
+        suggestions = self._suggest(client, '28 Lillian').get_json()['suggestions']
+
+        assert suggestions == [{'address': '28 Lillian Road, Lexington, MA', 'source': 'photon'},
+                               {'address': '30 Lillian Road, Lexington, MA', 'source': 'photon'}]
+
+    def test_your_own_past_addresses_come_first(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query, **kwargs: ['28 Lillian Road, Lexington, MA'])
+        analysis = make_logged_in_analysis(client)  # 123 Main St, Austin, TX
+        add_analysis('9 Lillian Rd, Lexington, MA', analysis.user_id)
+
+        suggestions = self._suggest(client, 'Lillian').get_json()['suggestions']
+
+        assert suggestions[0] == {'address': '9 Lillian Rd, Lexington, MA', 'source': 'history'}
+        assert suggestions[1]['source'] == 'photon'
+
+    def test_an_address_already_analyzed_is_not_listed_twice(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query, **kwargs: ['28 Lillian RD, Lexington, MA'])
+        analysis = make_logged_in_analysis(client)
+        add_analysis('28 Lillian Rd, Lexington, MA', analysis.user_id)
+
+        suggestions = self._suggest(client, 'Lillian').get_json()['suggestions']
+
+        assert suggestions == [{'address': '28 Lillian Rd, Lexington, MA', 'source': 'history'}]
+
+    def test_only_your_own_past_addresses(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query, **kwargs: [])
+        make_logged_in_analysis(client)
+        other = User(username='other', email='other@example.com', password_hash='x')
+        db.session.add(other)
+        db.session.commit()
+        add_analysis('28 Lillian Rd, Lexington, MA', other.id)
+
+        assert self._suggest(client, 'Lillian').get_json() == {'suggestions': []}
+
+    def test_a_provider_outage_still_offers_past_addresses(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query, **kwargs: [])
+        analysis = make_logged_in_analysis(client)
+        add_analysis('28 Lillian Rd, Lexington, MA', analysis.user_id)
+
+        suggestions = self._suggest(client, 'Lillian').get_json()['suggestions']
+
+        assert suggestions == [{'address': '28 Lillian Rd, Lexington, MA', 'source': 'history'}]
+
+    def test_wildcards_in_the_query_match_literally(self, client, monkeypatch):
+        # Unescaped, '%' would turn the search into "anything at all".
+        monkeypatch.setattr('blueprints.main.suggest_addresses', lambda query, **kwargs: [])
+        analysis = make_logged_in_analysis(client)
+        add_analysis('12 Abbey Rd, Austin, TX', analysis.user_id)
+
+        assert self._suggest(client, 'a%y').get_json() == {'suggestions': []}
+        assert self._suggest(client, 'Abbey').get_json()['suggestions'][0]['address'] == '12 Abbey Rd, Austin, TX'
+
+    def test_at_most_six_suggestions(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.suggest_addresses',
+                            lambda query, **kwargs: [f'{n} Lillian Road, Lexington, MA' for n in range(20, 30)])
+        analysis = make_logged_in_analysis(client)
+        for number in (1, 2, 3, 4):
+            add_analysis(f'{number} Lillian Rd, Lexington, MA', analysis.user_id)
+
+        suggestions = self._suggest(client, 'Lillian').get_json()['suggestions']
+
+        assert len(suggestions) == 6
+        assert [item['source'] for item in suggestions[:3]] == ['history'] * 3  # at most three of your own
+
+    def test_lookups_are_rate_limited_per_user(self, client, monkeypatch):
+        seen = {}
+        monkeypatch.setattr('blueprints.main.suggest_addresses',
+                            lambda query, **kwargs: seen.update(kwargs) or [])
+        analysis = make_logged_in_analysis(client)
+
+        self._suggest(client, 'Lillian')
+
+        assert seen == {'client': analysis.user_id}
+
+    def test_the_form_offers_the_suggestion_box(self, client):
+        make_logged_in_analysis(client)
+
+        html = client.get('/').data.decode()
+
+        assert 'id="address-suggestions"' in html
+        assert 'role="combobox"' in html
+        assert 'address-autocomplete.js' in html
+        assert 'data-suggest-url="/addresses/suggest"' in html
+        # Screen readers hear the dropdown through this.
+        assert 'id="address-status"' in html and 'aria-live="polite"' in html
+
+
 class FakeAPIError(anthropic.APIError):
     """An API failure without the HTTP request the SDK's own constructors need."""
 
     def __init__(self):
         self.message = 'Claude is unavailable'
         Exception.__init__(self, self.message)
+
+
+class SpyLimitsClient(MockLimitsClient):
+    def __init__(self, error=None):
+        super().__init__()
+        self.error = error
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error:
+            raise self.error
+        return super().create(**kwargs)
+
+
+@pytest.fixture
+def limits_client(monkeypatch):
+    spy = SpyLimitsClient()
+    monkeypatch.setattr('blueprints.main.build_limits_client', lambda: spy)
+    monkeypatch.setattr('blueprints.main.limits_configured', lambda: True)
+    return spy
+
+
+class TestOnDemandBuildLimits:
+    def _page(self, client, analysis):
+        return _build_restrictions_text(client.get(f'/analyses/{analysis.id}').data.decode())
+
+    def _search(self, client, analysis):
+        return client.post(f'/analyses/{analysis.id}/build-limits', follow_redirects=True)
+
+    def test_uncovered_district_offers_a_search(self, client, limits_client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        text = self._page(client, analysis)
+
+        assert "for district RM-M in Pittsburgh, PA aren't on file yet" in text
+        assert 'Find exact limits' in text
+        assert limits_client.calls == []  # showing the offer costs nothing
+
+    def test_hand_checked_town_needs_no_search(self, client, limits_client):
+        analysis = make_logged_in_analysis(client, zoning_detail=LEXINGTON_DISCOVERED)
+
+        html = client.get(f'/analyses/{analysis.id}').data.decode()
+
+        assert 'id="build-limits-form"' not in html
+
+    def test_a_district_already_on_file_needs_no_search(self, client, limits_client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        save_limits()
+
+        assert 'id="build-limits-form"' not in client.get(f'/analyses/{analysis.id}').data.decode()
+        self._search(client, analysis)
+        assert limits_client.calls == []
+
+    def test_search_saves_and_shows_only_quote_checked_limits(self, client, limits_client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        response = self._search(client, analysis)
+
+        assert response.status_code == 200
+        text = _build_restrictions_text(response.data.decode())
+        assert 'What you can build: RM-M' in text
+        assert 'Front setback' in text and '25 ft' in text
+        assert 'Maximum stories' not in text  # its quote isn't on the page, so it was dropped
+        assert 'Find exact limits' not in text
+        row = BuildLimitsLookup.query.one()
+        assert (row.jurisdiction, row.district, row.status) == ('Pittsburgh, PA', 'RM-M', 'found')
+        assert '"RM-M" zoning district' in limits_client.calls[0]['system']
+
+    def test_daily_limit(self, client, limits_client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.daily_search_limit', lambda: 0)
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        html = self._search(client, analysis).data.decode()
+
+        assert 'limit of 0 searches a day' in html
+        assert limits_client.calls == []
+        assert BuildLimitsLookup.query.count() == 0
+
+    def test_failed_search_can_be_retried(self, client, monkeypatch):
+        failing = SpyLimitsClient(error=FakeAPIError())
+        monkeypatch.setattr('blueprints.main.build_limits_client', lambda: failing)
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        html = self._search(client, analysis).data.decode()
+
+        assert "didn&#39;t finish" in html or "didn't finish" in html
+        assert BuildLimitsLookup.query.one().status == 'failed'
+        assert 'Find exact limits' in _build_restrictions_text(html)
+
+    def test_not_found_is_explained_with_a_retry(self, client, limits_client):
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+        save_limits(status='not_found', limits=None,
+                    notes='The code is only published as scanned images.')
+
+        text = self._page(client, analysis)
+
+        assert "couldn't find limits for district RM-M" in text
+        assert 'The code is only published as scanned images.' in text
+        assert 'Search again' in text
+
+    def test_not_set_up(self, client, monkeypatch):
+        monkeypatch.setattr('blueprints.main.build_limits_client', lambda: None)
+        monkeypatch.setattr('blueprints.main.limits_configured', lambda: False)
+        analysis = make_logged_in_analysis(client, zoning_detail=PITTSBURGH_DISCOVERED)
+
+        text = self._page(client, analysis)
+        assert "isn't set up on this server yet" in text
+        assert 'Find exact limits' not in text
+        assert 'set up on this server yet' in self._search(client, analysis).data.decode()
+        assert BuildLimitsLookup.query.count() == 0
+
+    def test_nothing_to_search_without_a_district(self, client, limits_client):
+        analysis = make_logged_in_analysis(client, zoning_detail={**PITTSBURGH_DISCOVERED, 'zoning_code': ''})
+
+        assert 'id="build-limits-form"' not in client.get(f'/analyses/{analysis.id}').data.decode()
+        self._search(client, analysis)
+        assert limits_client.calls == []
+
+    def test_requires_login(self, client, limits_client):
+        response = client.post('/analyses/1/build-limits')
+
+        assert response.status_code in (302, 401)
+        assert limits_client.calls == []
 
 
 class FakeChatClient:

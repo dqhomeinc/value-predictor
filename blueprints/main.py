@@ -4,6 +4,7 @@ import os
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from integrations.address_suggest import MIN_QUERY_CHARS, normalized, suggest_addresses
 from integrations.municipal_zoning import SUPPORTED_JURISDICTIONS, safe_external_url
 from integrations.rentcast import RentCastError
 from models import Analysis, ChatMessage, db
@@ -13,6 +14,17 @@ from services.analyzer import (
     build_rentcast_client,
     rentcast_mock_enabled,
     run_analysis,
+)
+from services.build_limits_search import (
+    build_limits_client,
+    daily_search_limit,
+    latest_lookup,
+    limits_configured,
+    limits_key,
+    limits_mock_enabled,
+    lookup_standards,
+    run_lookup,
+    searches_in_last_day,
 )
 from services.dimensional_standards import standards_for
 from services.market_value import MarketValueUnavailableError
@@ -148,18 +160,133 @@ def analysis_detail(analysis_id):
     # editorial and should improve for past analyses too, not be frozen
     # into whatever text shipped the day they were run.
     restrictions = annotate((analysis.zoning_detail or {}).get('restrictions'))
+    standards, limits_search = _standards_or_search(analysis)
     return render_template(
         'analysis_results.html',
         analysis=analysis,
         restrictions=restrictions,
         zoning_note=GENERIC_NOTE,
         supported_jurisdictions=SUPPORTED_JURISDICTIONS,
-        standards=standards_for(analysis.zoning_detail, analysis.property_lot_size),
+        standards=standards,
+        limits_search=limits_search,
         chat_messages=analysis.chat_messages,
         chat_available=chat_configured(),
         chat_mock=chat_mock_enabled(),
         chat_max_chars=MAX_QUESTION_CHARS,
     )
+
+
+def _standards_or_search(analysis):
+    """
+    (standards, limits_search) for the results page. Hand-checked towns and
+    the Zoning Atlas come first (services.dimensional_standards), then a
+    saved on-demand search for the district. Where none has numbers,
+    limits_search describes the "Find exact limits" offer instead.
+    """
+    standards = standards_for(analysis.zoning_detail, analysis.property_lot_size)
+    if standards is not None:
+        return standards, None
+    key = limits_key(analysis)
+    if key is None:
+        return None, None
+    lookup = latest_lookup(*key)
+    if lookup is not None and lookup.status == 'found':
+        return lookup_standards(lookup), None
+    return None, {
+        'jurisdiction': key[0], 'district': key[1], 'previous': lookup,
+        'available': limits_configured(), 'mock': limits_mock_enabled(),
+    }
+
+
+@main_bp.route('/analyses/<int:analysis_id>/build-limits', methods=['POST'])
+@login_required
+def search_build_limits(analysis_id):
+    """
+    Run the on-demand build-limits search for this analysis's district
+    (services/build_limits_search.py), then back to the results page. The
+    result is saved per district, so it's only ever paid for once.
+    """
+    analysis = Analysis.query.filter_by(id=analysis_id, user_id=current_user.id).first_or_404()
+    back = redirect(url_for('main.analysis_detail', analysis_id=analysis.id, _anchor='build-restrictions'))
+
+    standards, offer = _standards_or_search(analysis)
+    if standards is not None:
+        return back  # already on file; nothing to spend
+    if offer is None:
+        flash("This analysis has no zoning district to look up limits for.", 'error')
+        return back
+
+    client = build_limits_client()
+    if client is None:
+        flash("Searching for exact limits isn't set up on this server yet.", 'error')
+        return back
+    limit = daily_search_limit()
+    if searches_in_last_day(current_user.id) >= limit:
+        flash(f"You've reached the limit of {limit} searches a day. Try again later.", 'error')
+        return back
+
+    lookup = run_lookup(client, (offer['jurisdiction'], offer['district']), current_user.id)
+    if lookup.status == 'failed':
+        flash("The search didn't finish. Please try again in a minute.", 'error')
+    return back
+
+
+# A few of each: enough to pick from without burying the one you want.
+PAST_ADDRESS_SUGGESTIONS = 3
+TOTAL_ADDRESS_SUGGESTIONS = 6
+
+
+@main_bp.route('/addresses/suggest')
+@login_required
+def suggest_address():
+    """
+    Address suggestions for the analyze form, as JSON. The user's own
+    past addresses come first (free, instant, and usually what they're
+    reaching for), then Photon's (integrations/address_suggest.py).
+
+    Always answers with a list: if the provider is down or slow, the
+    past addresses still show and the field still accepts typing.
+    """
+    query = ' '.join(request.args.get('q', '').split())
+    if len(query) < MIN_QUERY_CHARS:
+        return jsonify(suggestions=[])
+
+    suggestions = [{'address': address, 'source': 'history'} for address in _past_addresses(query)]
+    seen = {normalized(item['address']) for item in suggestions}
+    # Identified per user, so one runaway page can't spend everyone's budget.
+    for address in suggest_addresses(query, client=current_user.id):
+        if normalized(address) in seen:
+            continue
+        seen.add(normalized(address))
+        suggestions.append({'address': address, 'source': 'photon'})
+    return jsonify(suggestions=suggestions[:TOTAL_ADDRESS_SUGGESTIONS])
+
+
+def _past_addresses(query, limit=PAST_ADDRESS_SUGGESTIONS):
+    """This user's previously analyzed addresses containing what they've typed."""
+    text = ' '.join(query.split())
+    if len(text) < MIN_QUERY_CHARS:
+        return []
+    # LIKE wildcards in the query would match far more than what was
+    # typed, so they're escaped rather than passed through.
+    escaped = text.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    rows = (
+        Analysis.query
+        .filter(Analysis.user_id == current_user.id, Analysis.address.ilike(f'%{escaped}%', escape='\\'))
+        .order_by(Analysis.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    addresses, seen = [], set()
+    for row in rows:
+        key = normalized(row.address)
+        if key in seen:
+            continue
+        seen.add(key)
+        addresses.append(row.address)
+        if len(addresses) == limit:
+            break
+    return addresses
 
 
 @main_bp.route('/analyses/<int:analysis_id>/chat', methods=['POST'])

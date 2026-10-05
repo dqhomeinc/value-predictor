@@ -7,9 +7,19 @@
   <section>
     <form method="post" action="{{ url_for('main.analyses') }}" id="analyze-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label>Address
-        <input type="text" name="address" value="{{ form_values.address if form_values else '' }}" required>
-      </label>
+      <div class="address-field">
+        <label for="address">Address
+          <input type="text" id="address" name="address" required autocomplete="off"
+                 value="{{ form_values.address if form_values else '' }}"
+                 role="combobox" aria-expanded="false" aria-controls="address-suggestions"
+                 aria-autocomplete="list" aria-describedby="address-hint"
+                 data-suggest-url="{{ url_for('main.suggest_address') }}">
+        </label>
+        <ul id="address-suggestions" class="address-suggestions" role="listbox"
+            aria-label="Address suggestions" hidden></ul>
+        <p id="address-hint" class="address-hint muted">Start typing and pick a match, or type the full address.</p>
+        <p id="address-status" class="visually-hidden" role="status" aria-live="polite"></p>
+      </div>
       <label>Purchase price ($)
         <input type="number" name="purchase_price" min="0" step="1000"
                value="{{ form_values.purchase_price if form_values else '' }}" required>
@@ -35,4 +45,5 @@
   <p class="page-nav"><a href="{{ url_for('main.analyses') }}">View past analyses</a></p>
 
   <script src="{{ url_for('static', filename='analyze-form.js') }}"></script>
+  <script src="{{ url_for('static', filename='address-autocomplete.js') }}"></script>
 {% endblock %}
