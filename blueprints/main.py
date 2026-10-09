@@ -7,7 +7,7 @@ from flask_login import current_user, login_required
 from integrations.address_suggest import MIN_QUERY_CHARS, normalized, suggest_addresses
 from integrations.municipal_zoning import SUPPORTED_JURISDICTIONS, safe_external_url
 from integrations.rentcast import RentCastError
-from models import Analysis
+from models import Analysis, ChatMessage, db
 from services.analyzer import (
     AnalysisError,
     build_municipal_zoning_lookup,
@@ -28,6 +28,16 @@ from services.build_limits_search import (
 )
 from services.dimensional_standards import standards_for
 from services.market_value import MarketValueUnavailableError
+from services.zoning_chat import (
+    MAX_QUESTION_CHARS,
+    ChatUnavailableError,
+    ask,
+    build_chat_client,
+    chat_configured,
+    chat_mock_enabled,
+    daily_message_limit,
+    messages_sent_in_last_day,
+)
 from services.zoning_guidance import GENERIC_NOTE, annotate
 
 main_bp = Blueprint('main', __name__)
@@ -159,6 +169,10 @@ def analysis_detail(analysis_id):
         supported_jurisdictions=SUPPORTED_JURISDICTIONS,
         standards=standards,
         limits_search=limits_search,
+        chat_messages=analysis.chat_messages,
+        chat_available=chat_configured(),
+        chat_mock=chat_mock_enabled(),
+        chat_max_chars=MAX_QUESTION_CHARS,
     )
 
 
@@ -273,3 +287,41 @@ def _past_addresses(query, limit=PAST_ADDRESS_SUGGESTIONS):
         if len(addresses) == limit:
             break
     return addresses
+
+
+@main_bp.route('/analyses/<int:analysis_id>/chat', methods=['POST'])
+@login_required
+def analysis_chat(analysis_id):
+    """
+    One question to the build-restrictions chat (services/zoning_chat.py),
+    answered as JSON: {'reply', 'sources'} or {'error'}. The question and
+    reply are saved together, and only once the reply succeeds.
+    """
+    analysis = Analysis.query.filter_by(id=analysis_id, user_id=current_user.id).first_or_404()
+    payload = request.get_json(silent=True)
+    question = str((payload if isinstance(payload, dict) else {}).get('message') or '').strip()
+    if not question:
+        return jsonify(error='Type a question first.'), 400
+    if len(question) > MAX_QUESTION_CHARS:
+        return jsonify(error=f'Questions are limited to {MAX_QUESTION_CHARS:,} characters.'), 400
+
+    client = build_chat_client()
+    if client is None:
+        return jsonify(error="The chat isn't set up on this server yet."), 503
+    limit = daily_message_limit()
+    if messages_sent_in_last_day(current_user.id) >= limit:
+        return jsonify(error=f"You've reached the limit of {limit} questions a day. Try again later."), 429
+
+    try:
+        reply = ask(client, analysis, analysis.chat_messages, question)
+    except ChatUnavailableError as exc:
+        logger.warning('Chat failed for analysis %s: %s', analysis.id, exc)
+        return jsonify(error="Couldn't get an answer right now. Please try again in a moment."), 502
+
+    db.session.add_all([
+        ChatMessage(analysis_id=analysis.id, role='user', content=question),
+        ChatMessage(analysis_id=analysis.id, role='assistant', content=reply.text,
+                    sources=reply.sources, web_searches=reply.web_searches),
+    ])
+    db.session.commit()
+    return jsonify(reply=reply.text, sources=reply.sources)

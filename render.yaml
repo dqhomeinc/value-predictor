@@ -22,6 +22,7 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false
         # Set to your Anthropic API key (https://platform.claude.com/), for the
-        # on-demand build-limits search. Without it, the search button is hidden.
+        # on-demand build-limits search and the build-restrictions chat.
+        # Without it, the search button is hidden and the chat says so.
       - key: PYTHON_VERSION
         value: 3.11.0
